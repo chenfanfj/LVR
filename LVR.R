@@ -3,7 +3,7 @@
 ## 目的:
 ##   1) 读取 AMI_PCI_metal_clean3. xlsx (n=1124)
 ##   2) 使用 gtsummary 构建基线表
-##   3) 应用中文标签和三线表格式
+##   3) 应用三线表格式
 ##   4) 直接导出到 outputs/ 目录的 Word (. docx) 文件
 ############################################################
 rm(list = ls(all.names = TRUE))
@@ -85,7 +85,7 @@ if (length(missing_in_data) > 0) {
 }
 
 ## ----------------------------------------
-## 3. 数据准备和中文标签
+## 3. 数据准备
 ## ----------------------------------------
 
 dat_tbl <- dat
@@ -101,65 +101,6 @@ for (v in bin_vars) {
 for (v in ord_vars) {
   if (v %in% names(dat_tbl)) {
     dat_tbl[[v]] <- factor(dat_tbl[[v]], ordered = TRUE)
-  }
-}
-
-## 示例:将选定的二元变量重新编码为中文标签
-if ("gender" %in% names(dat_tbl)) {
-  dat_tbl$gender <- factor(dat_tbl$gender,
-                           levels = c(0, 1),
-                           labels = c("女性", "男性"))
-}
-if ("smoking" %in% names(dat_tbl)) {
-  dat_tbl$smoking <- factor(dat_tbl$smoking,
-                            levels = c(0, 1),
-                            labels = c("从不/已戒烟", "目前吸烟"))
-}
-if ("DM" %in% names(dat_tbl)) {
-  dat_tbl$DM <- factor(dat_tbl$DM,
-                       levels = c(0, 1),
-                       labels = c("无", "有"))
-}
-if ("hypertension" %in% names(dat_tbl)) {
-  dat_tbl$hypertension <- factor(dat_tbl$hypertension,
-                                 levels = c(0, 1),
-                                 labels = c("无", "有"))
-}
-
-## 定义中文变量标签(根据需要扩展)
-var_labels_zh <- c(
-  resident        = "是否本地居民",
-  Career          = "职业",
-  gender          = "性别",
-  smoking         = "吸烟状态",
-  DM              = "糖尿病",
-  hypertension    = "高血压",
-  Cancer          = "恶性肿瘤病史",
-  his_stroke      = "既往卒中史",
-  AF              = "房颤",
-  age             = "年龄(岁)",
-  height          = "身高(cm)",
-  weight          = "体重(kg)",
-  BMI             = "体质指数(kg/m²)",
-  SBP             = "收缩压(mmHg)",
-  DBP             = "舒张压(mmHg)",
-  HR              = "心率(次/分)",
-  EF_baseline     = "基线LVEF(%)",
-  LVEDV_baseline  = "基线LVEDV(mL)",
-  LVESV_baseline  = "基线LVESV(mL)",
-  EF_fu           = "随访LVEF(%)",
-  LVEDV_fu        = "随访LVEDV(mL)",
-  LVESV_fu        = "随访LVESV(mL)",
-  ΔLVEDV          = "LVEDV变化(mL)",
-  Echo_fu_day     = "随访超声间隔(天)",
-  Echo_fu_month   = "随访超声间隔(月)"
-  ## 根据需要添加更多变量
-)
-
-## 将标签应用于数据集(gtsummary 将使用这些标签)
-for (v in names(var_labels_zh)) {
-  if (v %in% names(dat_tbl)) {
-    attr(dat_tbl[[v]], "label") <- var_labels_zh[[v]]
   }
 }
 
@@ -233,5 +174,6 @@ doc <- flextable::body_add_flextable(doc, value = ft)
 print(doc, target = output_docx)
 
 cat("基线表 Table 1 已保存至:", output_docx, "\n")
+
 
 ############################################################
