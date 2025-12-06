@@ -1,43 +1,26 @@
 ############################################################
-## LVR_baseline_gtsummary.R – 使用 gtsummary 直接导出 Word
-## 目的:
-##   1) 读取 AMI_PCI_metal_clean3. xlsx (n=1124)
-##   2) 使用 gtsummary 构建基线表
-##   3) 应用三线表格式
-##   4) 直接导出到 outputs/ 目录的 Word (. docx) 文件
+## LVR_baseline_标准版. R – 符合临床发表标准的基线表
 ############################################################
+
 rm(list = ls(all.names = TRUE))
 gc()
-## 加载所需包
-pkgs <- c(
-  "here",       # 项目相对路径
-  "readxl",     # 读取 Excel
-  "dplyr",      # 数据整理
-  "gtsummary",  # 集成汇总表
-  "flextable",  # 微调表格格式
-  "officer"     # Word 文档导出
-)
 
-for (p in pkgs) {
-  if (! requireNamespace(p, quietly = TRUE)) {
-    install.packages(p)
-  }
-  library(p, character.only = TRUE)
-}
+library(here)
+library(readxl)
+library(dplyr)
+library(gtsummary)
+library(flextable)
+library(officer)
 
 ## ---------------------------------
-## 1. 项目路径与数据导入
+## 1. 读取数据
 ## ---------------------------------
-
-data_path <- here::here("data", "AMI_PCI_metal_clean3.xlsx")
+data_path <- "D:/R_try/2026_APMM/data/AMI_PCI_metal_clean3.xlsx"
 dat <- readxl::read_excel(path = data_path, col_names = TRUE)
 
-## 可选:验证样本量
-# stopifnot(nrow(dat) == 1124)
-
-## ------------------------------------------------
-## 2. 定义变量列表(使用您的确切变量名)
-## ------------------------------------------------
+## ---------------------------------
+## 2. 定义变量类型(同之前)
+## ---------------------------------
 
 bin_vars <- c(
   "resident", "Career", "gender", "smoking", "DM", "hypertension",
@@ -75,105 +58,415 @@ con_vars <- c(
   "Rb", "Sb", "Se", "Sn", "Sr", "V", "Zn"
 )
 
-all_vars <- c(bin_vars, ord_vars, con_vars)
+## ---------------------------------
+## 3. 数据预处理 + 标签重新编码
+## ---------------------------------
 
-## 检查缺失变量
-missing_in_data <- setdiff(all_vars, names(dat))
-if (length(missing_in_data) > 0) {
-  warning("以下变量不在数据集中:\n",
-          paste(missing_in_data, collapse = ", "))
+if ("ID" %in% names(dat)) {
+  dat_work <- dat %>% select(-ID)
+} else {
+  dat_work <- dat
 }
 
-## ----------------------------------------
-## 3. 数据准备
-## ----------------------------------------
+## 确保只保留存在的变量
+bin_vars_exist <- intersect(bin_vars, names(dat_work))
+ord_vars_exist <- intersect(ord_vars, names(dat_work))
+con_vars_exist <- intersect(con_vars, names(dat_work))
 
-dat_tbl <- dat
+## ★★★ 关键改进:将二元变量重新编码为有意义的标签 ★★★
+if ("gender" %in% names(dat_work)) {
+  dat_work$gender <- factor(dat_work$gender,
+                            levels = c(2, 1),
+                            labels = c("女性", "男性"))
+}
 
-## 将二元变量转为因子
-for (v in bin_vars) {
-  if (v %in% names(dat_tbl)) {
-    dat_tbl[[v]] <- factor(dat_tbl[[v]])
+if ("smoking" %in% names(dat_work)) {
+  dat_work$smoking <- factor(dat_work$smoking,
+                             levels = c(0, 1),
+                             labels = c("不吸烟", "吸烟"))
+}
+
+if ("DM" %in% names(dat_work)) {
+  dat_work$DM <- factor(dat_work$DM,
+                        levels = c(0, 1),
+                        labels = c("无", "有"))
+}
+
+if ("hypertension" %in% names(dat_work)) {
+  dat_work$hypertension <- factor(dat_work$hypertension,
+                                  levels = c(0, 1),
+                                  labels = c("无", "有"))
+}
+
+if ("resident" %in% names(dat_work)) {
+  dat_work$resident <- factor(dat_work$resident,
+                              levels = c(0, 1),
+                              labels = c("农村", "城镇"))
+}
+
+if ("Career" %in% names(dat_work)) {
+  dat_work$Career <- factor(dat_work$Career,
+                            levels = c(0, 1),
+                            labels = c("无业/退休", "在职"))
+}
+
+## 其他二元变量统一转为"否/是"
+other_bin_vars <- setdiff(bin_vars_exist, 
+                          c("gender", "smoking", "DM", "hypertension", 
+                            "resident", "Career"))
+
+for (v in other_bin_vars) {
+  dat_work[[v]] <- factor(dat_work[[v]],
+                          levels = c(0, 1),
+                          labels = c("否", "是"))
+}
+
+## ★★★ 有序变量添加标签 ★★★
+if ("GRACE_in_str" %in% names(dat_work)) {
+  dat_work$GRACE_in_str <- factor(dat_work$GRACE_in_str,
+                                  levels = c(1, 2, 3),
+                                  labels = c("低危", "中危", "高危"),
+                                  ordered = TRUE)
+}
+
+if ("Grace_out_str" %in% names(dat_work)) {
+  dat_work$Grace_out_str <- factor(dat_work$Grace_out_str,
+                                   levels = c(1, 2, 3),
+                                   labels = c("低危", "中危", "高危"),
+                                   ordered = TRUE)
+}
+
+if ("IN_killip" %in% names(dat_work)) {
+  dat_work$IN_killip <- factor(dat_work$IN_killip,
+                               levels = c(1, 2, 3, 4),
+                               labels = c("I级", "II级", "III级", "IV级"),
+                               ordered = TRUE)
+}
+
+if ("OUT_killip" %in% names(dat_work)) {
+  dat_work$OUT_killip <- factor(dat_work$OUT_killip,
+                                levels = c(1, 2, 3, 4),
+                                labels = c("I级", "II级", "III级", "IV级"),
+                                ordered = TRUE)
+}
+
+## 确保连续变量为数值型
+for (v in con_vars_exist) {
+  if (! is.numeric(dat_work[[v]])) {
+    dat_work[[v]] <- as.numeric(dat_work[[v]])
   }
 }
 
-## 将有序变量转为有序因子
-for (v in ord_vars) {
-  if (v %in% names(dat_tbl)) {
-    dat_tbl[[v]] <- factor(dat_tbl[[v]], ordered = TRUE)
+## ★★★ 关键改进:添加中文变量标签 ★★★
+var_labels <- c(
+  ## 人口学特征
+  age = "年龄(岁)",
+  gender = "性别",
+  height = "身高(cm)",
+  weight = "体重(kg)",
+  BMI = "体质指数(kg/m²)",
+  resident = "居住地",
+  Career = "职业状态",
+  
+  ## 生命体征
+  SBP = "收缩压(mmHg)",
+  DBP = "舒张压(mmHg)",
+  HR = "心率(次/分)",
+  
+  ## 危险因素
+  smoking = "吸烟状态",
+  DM = "糖尿病",
+  hypertension = "高血压",
+  Cancer = "恶性肿瘤史",
+  his_stroke = "既往脑卒中",
+  AF = "心房颤动",
+  
+  ## 入院评分
+  IN_killip = "入院Killip分级",
+  GRACE_in = "入院GRACE评分",
+  GRACE_in_str = "入院GRACE危险分层",
+  
+  ## 出院评分
+  OUT_killip = "出院Killip分级",
+  GRACE_out = "出院GRACE评分",
+  Grace_out_str = "出院GRACE危险分层",
+  
+  ## 心电图特征
+  ST_dev = "ST段抬高",
+  ST_dep = "ST段压低",
+  
+  ## 心肌梗死类型
+  STEMI = "ST段抬高型心肌梗死",
+  Anterior_MI = "前壁心梗",
+  Inferior_MI = "下壁心梗",
+  Lateral_MI = "侧壁心梗",
+  Posterior_MI = "后壁心梗",
+  EA_MI = "心尖部心梗",
+  AT_MI = "前间壁心梗",
+  HL_MI = "高侧壁心梗",
+  RV_MI = "右室心梗",
+  
+  ## 冠脉病变情况
+  Lesion_no = "病变数量",
+  TL_LM = "左主干完全闭塞",
+  TL_LAD = "前降支完全闭塞",
+  TL_LCX = "回旋支完全闭塞",
+  TL_RCA = "右冠完全闭塞",
+  LAD = "前降支病变",
+  LCX = "回旋支病变",
+  RCA = "右冠病变",
+  LM = "左主干病变",
+  Thrombo_Burden = "血栓负荷",
+  
+  ## 介入治疗
+  pPCI = "急诊PCI",
+  Stent_no = "支架数量",
+  Temporary_pacemaker = "临时起搏器",
+  
+  ## 并发症
+  VF = "心室颤动",
+  Cardio_shock = "心源性休克",
+  Cardiac_arrest_in = "院内心脏骤停",
+  
+  ## 血常规
+  WBC = "白细胞计数(×10⁹/L)",
+  RBC = "红细胞计数(×10¹²/L)",
+  HGB = "血红蛋白(g/L)",
+  PLT = "血小板计数(×10⁹/L)",
+  NE_ = "中性粒细胞百分比(%)",
+  LY_ = "淋巴细胞百分比(%)",
+  EO_ = "嗜酸性粒细胞百分比(%)",
+  BA_ = "嗜碱性粒细胞百分比(%)",
+  MO_ = "单核细胞百分比(%)",
+  HCT = "红细胞压积(%)",
+  NE = "中性粒细胞计数(×10⁹/L)",
+  LY = "淋巴细胞计数(×10⁹/L)",
+  EO = "嗜酸性粒细胞计数(×10⁹/L)",
+  BA = "嗜碱性粒细胞计数(×10⁹/L)",
+  MO = "单核细胞计数(×10⁹/L)",
+  MCV = "平均红细胞体积(fL)",
+  MCH = "平均血红蛋白量(pg)",
+  MCHC = "平均血红蛋白浓度(g/L)",
+  RDW = "红细胞分布宽度(%)",
+  MPV = "平均血小板体积(fL)",
+  PCT = "血小板压积(%)",
+  PDW = "血小板分布宽度(%)",
+  
+  ## 心肌标志物
+  cTnI_baseline = "基线肌钙蛋白I(ng/mL)",
+  cTnIpeak = "峰值肌钙蛋白I(ng/mL)",
+  cTnI_out = "出院肌钙蛋白I(ng/mL)",
+  NTproBNP_baseline = "基线NT-proBNP(pg/mL)",
+  NTproBNP_peak = "峰值NT-proBNP(pg/mL)",
+  CK = "肌酸激酶(U/L)",
+  CKMB = "肌酸激酶同工酶(U/L)",
+  
+  ## 肝肾功能
+  ALT = "丙氨酸转氨酶(U/L)",
+  AST = "天冬氨酸转氨酶(U/L)",
+  AST_ALT = "AST/ALT比值",
+  TBIL = "总胆红素(μmol/L)",
+  DBIL = "直接胆红素(μmol/L)",
+  IBIL = "间接胆红素(μmol/L)",
+  SCR = "血肌酐(μmol/L)",
+  EGFR = "肾小球滤过率(mL/min/1.73m²)",
+  BUN = "尿素氮(mmol/L)",
+  BUN_CREA = "尿素氮/肌酐比值",
+  URIC = "尿酸(μmol/L)",
+  PAB_SH = "前白蛋白(g/L)",
+  TP = "总蛋白(g/L)",
+  GLB = "球蛋白(g/L)",
+  A_G = "白球比",
+  Alb = "白蛋白(g/L)",
+  GGT = "γ-谷氨酰转移酶(U/L)",
+  LDH = "乳酸脱氢酶(U/L)",
+  ALP = "碱性磷酸酶(U/L)",
+  
+  ## 血糖
+  GLU = "葡萄糖(mmol/L)",
+  HbAlc = "糖化血红蛋白(%)",
+  
+  ## 血脂
+  CHOL = "总胆固醇(mmol/L)",
+  TG = "甘油三酯(mmol/L)",
+  LDL = "低密度脂蛋白(mmol/L)",
+  HDL = "高密度脂蛋白(mmol/L)",
+  APROA = "载脂蛋白A(g/L)",
+  APROB = "载脂蛋白B(g/L)",
+  APROB_APROA = "载脂蛋白B/A比值",
+  
+  ## 炎症指标
+  CRP = "C反应蛋白(mg/L)",
+  IL_6 = "白介素-6(pg/mL)",
+  h_CT = "降钙素(ng/L)",
+  
+  ## 心脏超声
+  EF_baseline = "基线左室射血分数(%)",
+  LVEDV_baseline = "基线左室舒张末容积(mL)",
+  LVESV_baseline = "基线左室收缩末容积(mL)",
+  EF_fu = "随访左室射血分数(%)",
+  LVEDV_fu = "随访左室舒张末容积(mL)",
+  LVESV_fu = "随访左室收缩末容积(mL)",
+  ΔLVEDV = "左室舒张末容积变化百分比(%)",
+  Echo_fu_day = "超声随访时间(天)",
+  Echo_fu_month = "超声随访时间(月)",
+  
+  ## 甲状腺功能
+  FT3 = "游离三碘甲状腺原氨酸(pmol/L)",
+  FT4 = "游离甲状腺素(pmol/L)",
+  S_TSH = "促甲状腺激素(mIU/L)",
+  
+  ## 电解质
+  K = "钾(mmol/L)",
+  Na = "钠(mmol/L)",
+  Ca = "钙(mmol/L)",
+  Mg = "镁(mmol/L)",
+  PHOS = "磷(mmol/L)",
+  CL = "氯(mmol/L)",
+  CO2 = "二氧化碳结合力(mmol/L)",
+  OSM = "渗透压(mOsm/L)",
+  AG = "阴离子间隙(mmol/L)",
+  
+  ## 凝血指标
+  DD = "D-二聚体(mg/L)",
+  APTT = "活化部分凝血活酶时间(秒)",
+  PT_sec = "凝血酶原时间(秒)",
+  TT = "凝血酶时间(秒)",
+  INR = "国际标准化比值",
+  ATⅢ = "抗凝血酶Ⅲ(%)",
+  FIB = "纤维蛋白原(g/L)",
+  
+  ## 血清金属
+  Al = "铝(μg/L)",
+  As = "砷(μg/L)",
+  B = "硼(μg/L)",
+  Ba = "钡(μg/L)",
+  Cr = "铬(μg/L)",
+  Cu = "铜(μg/L)",
+  Fe = "铁(μg/L)",
+  Li = "锂(μg/L)",
+  Mn = "锰(μg/L)",
+  Mo = "钼(μg/L)",
+  Ni = "镍(μg/L)",
+  Pb = "铅(μg/L)",
+  Rb = "铷(μg/L)",
+  Sb = "锑(μg/L)",
+  Se = "硒(μg/L)",
+  Sn = "锡(μg/L)",
+  Sr = "锶(μg/L)",
+  V = "钒(μg/L)",
+  Zn = "锌(μg/L)",
+  
+  ## 用药
+  Aspirin = "阿司匹林",
+  Clopidogrel = "氯吡格雷",
+  Ticagrelor = "替格瑞洛",
+  tirofiban = "替罗非班",
+  Statin = "他汀类药物",
+  ACEIorARB = "ACEI/ARB",
+  β_block = "β受体阻滞剂",
+  CCB = "钙通道阻滞剂",
+  Heparin = "肝素",
+  diuretics = "利尿剂",
+  insulin = "胰岛素",
+  metformin = "二甲双胍"
+)
+
+## 应用标签到数据集
+for (v in names(var_labels)) {
+  if (v %in% names(dat_work)) {
+    attr(dat_work[[v]], "label") <- var_labels[[v]]
   }
 }
 
-## ----------------------------------------
-## 4. 使用 gtsummary 构建基线表
-## ----------------------------------------
+cat("数据预处理完成\n")
 
-vars_for_table <- intersect(all_vars, names(dat_tbl))
+## ---------------------------------
+## 4. 构建基线表
+## ---------------------------------
 
-tbl_summary_gt <- dat_tbl %>%
-  select(all_of(vars_for_table)) %>%
+cat("构建基线表...\n")
+
+tbl <- dat_work %>%
+  select(all_of(c(bin_vars_exist, ord_vars_exist, con_vars_exist))) %>%
   gtsummary::tbl_summary(
-    missing = "always",           # 显示缺失值
-    statistic = list(
-      all_continuous() ~ "{mean} ({sd})",  # 连续变量:均值(标准差)
-      all_categorical() ~ "{n} ({p}%)"     # 分类变量:n (%)
+    type = list(
+      all_of(con_vars_exist) ~ "continuous",
+      all_of(c(bin_vars_exist, ord_vars_exist)) ~ "categorical"
     ),
+    statistic = list(
+      all_continuous() ~ "{mean} ± {sd}",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    missing = "ifany",
+    missing_text = "缺失数据",
     digits = list(
-      all_continuous() ~ 1,
+      all_continuous() ~ 2,
       all_categorical() ~ c(0, 1)
-    )
+    ),
+    label = var_labels  ## ★ 应用中文标签
   ) %>%
-  gtsummary::modify_header(label = "**变量**", stat_0 = "**整体队列 (N={N})**") %>%
-  gtsummary::bold_labels()
+  gtsummary::modify_header(
+    label = "**特征**",
+    stat_0 = "**整体队列 (N = {N})**"
+  ) %>%
+  gtsummary::bold_labels() %>%
+  ## ★★★ 添加脚注 ★★★
+  gtsummary::modify_footnote(
+    all_stat_cols() ~ "连续变量以均数 ± 标准差表示,分类变量以例数(百分比)表示"
+  )
 
-## ----------------------------------------
-## 5. 转换为 flextable 并应用三线表格式
-## ----------------------------------------
+cat("✓ 基线表构建完成\n")
 
-ft <- gtsummary::as_flex_table(tbl_summary_gt)
+## ---------------------------------
+## 5. 格式化为三线表
+## ---------------------------------
 
-## 定义三线表边框
-top_bottom_border    <- officer::fp_border(color = "black", width = 2)
-header_bottom_border <- officer::fp_border(color = "black", width = 1)
+ft <- gtsummary::as_flex_table(tbl)
 
-## 首先移除所有边框
+## 三线表边框
+border_top_bottom <- officer::fp_border(color = "black", width = 2)
+border_header <- officer::fp_border(color = "black", width = 1)
+
 ft <- flextable::border_remove(ft)
+ft <- flextable::hline_top(ft, part = "header", border = border_top_bottom)
+ft <- flextable::hline_bottom(ft, part = "header", border = border_header)
+ft <- flextable::hline_bottom(ft, part = "body", border = border_top_bottom)
 
-## 顶部边框:第一行
-ft <- flextable::hline_top(ft, part = "header", border = top_bottom_border)
+## 设置字体(可选)
+ft <- flextable::font(ft, fontname = "Times New Roman", part = "all")
+ft <- flextable::fontsize(ft, size = 10, part = "all")
 
-## 表头底部(细线)
-ft <- flextable::hline_bottom(ft, part = "header", border = header_bottom_border)
-
-## 底部边框:主体的最后一行
-ft <- flextable::hline_bottom(ft, part = "body", border = top_bottom_border)
-
-## 可选:设置中文字体(例如 SimSun/宋体)
-ft <- flextable::font(ft, fontname = "SimSun", part = "all")
-
-## 自动调整列宽
+## 自动调整
 ft <- flextable::autofit(ft)
 
-## ----------------------------------------
-## 6. 直接导出到 Word
-## ----------------------------------------
+## ---------------------------------
+## 6. 导出Word
+## ---------------------------------
 
-output_dir <- here::here("outputs")
-if (!dir.exists(output_dir)) {
-  dir.create(output_dir, recursive = TRUE)
-}
+output_dir <- "D:/R_try/2026_APMM/outputs"
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
-output_docx <- file.path(output_dir, "table1_baseline_gtsummary_cn.docx")
+output_file <- file.path(output_dir, "Table1_Baseline_Standard.docx")
 
-## 创建 Word 文档
 doc <- officer::read_docx()
-doc <- officer::body_add_par(doc, "表1 基线特征", style = "heading 1")
+
+## 添加表格标题
+doc <- officer::body_add_par(doc, "表1 研究对象基线特征", 
+                             style = "heading 1")
+
+## 添加表格
 doc <- flextable::body_add_flextable(doc, value = ft)
 
-## 保存文档
-print(doc, target = output_docx)
+## ★★★ 添加表格脚注/说明 ★★★
+doc <- officer::body_add_par(doc, "")  # 空行
+doc <- officer::body_add_par(doc, 
+                             "缩写: BMI, 体质指数; SBP, 收缩压; DBP, 舒张压; HR, 心率; DM, 糖尿病; PCI, 经皮冠状动脉介入治疗; LVEF, 左室射血分数; LVEDV, 左室舒张末容积; LVESV, 左室收缩末容积; GRACE, 全球急性冠脉事件注册评分。",
+                             style = "Normal"
+)
 
-cat("基线表 Table 1 已保存至:", output_docx, "\n")
+print(doc, target = output_file)
 
+cat("✓✓✓ 成功导出标准基线表至:", output_file, "\n")
 
 ############################################################
