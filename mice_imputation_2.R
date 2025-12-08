@@ -342,6 +342,36 @@ dev.off()
 
 cat("    ✓ 缺失分析完成\n\n")
 
+## ---------------------------
+## 3.4 应用缺失率阈值
+## ---------------------------
+cat("\n  3.4 应用缺失率阈值\n")
+
+MISSINGNESS_THRESHOLD <- 40  ## 严格阈值: 40%
+
+high_miss_to_remove <- miss_summary %>%
+  filter(pct_missing > MISSINGNESS_THRESHOLD, 
+         !variable %in% c("has_fu_echo", "LVESV_fu", "EF_fu")) %>%  ## 保护关键结局
+  pull(variable)
+
+if (length(high_miss_to_remove) > 0) {
+  cat("    移除高缺失变量 (>", MISSINGNESS_THRESHOLD, "%):", 
+      length(high_miss_to_remove), "个\n")
+  
+  ## 保存移除清单
+  write.csv(
+    data.frame(variable = high_miss_to_remove, 
+               reason = paste0("缺失率 >", MISSINGNESS_THRESHOLD, "%")),
+    file.path(outputs_dir, "removed_high_missing_vars.csv"),
+    row.names = FALSE
+  )
+  
+  dat_for_mi <- dat_for_mi %>% select(-all_of(high_miss_to_remove))
+  imputation_vars <- setdiff(imputation_vars, high_miss_to_remove)
+}
+
+cat("    保留变量数:", ncol(dat_for_mi) - 1, "个\n")
+
 ## ═══════════════════════════════════════════════════════
 ## 步骤 4: 变量质量诊断（完全重写版）
 ## ═══════════════════════════════════════════════════════
@@ -488,7 +518,37 @@ if (length(numeric_vars) > 1) {
 } else {
   cat("    ⊙ 数值变量不足，跳过共线性检查\n")
 }
-
+## 在共线性检查失败后添加
+if (is.null(cor_result)) {
+  cat("    ⊙ 启用备用清理策略\n")
+  
+  ## 备用方案: 逐个检查变量是否可用于回归
+  problematic_vars <- character()
+  
+  for (var in numeric_vars) {
+    test_data <- dat_for_mi[, c(var, sample(setdiff(numeric_vars, var), min(5, length(numeric_vars)-1)))]
+    test_data <- test_data[complete.cases(test_data), ]
+    
+    if (nrow(test_data) < 20) {
+      problematic_vars <- c(problematic_vars, var)
+      next
+    }
+    
+    ## 尝试拟合简单线性模型
+    tryCatch({
+      formula <- as.formula(paste(var, "~ . "))
+      lm(formula, data = test_data)
+    }, error = function(e) {
+      problematic_vars <<- c(problematic_vars, var)
+    })
+  }
+  
+  if (length(problematic_vars) > 0) {
+    cat("      移除无法建模的变量:", length(problematic_vars), "个\n")
+    dat_for_mi <- dat_for_mi %>% select(-all_of(problematic_vars))
+    imputation_vars <- setdiff(imputation_vars, problematic_vars)
+  }
+}
 ## ---------------------------
 ## 4.3 生成诊断摘要
 ## ---------------------------
@@ -766,6 +826,33 @@ cat("    同步后: 数据", ncol(dat_for_mi), "列, meth", length(meth), "个\n
 
 cat("\n  ✓ 配置完成\n\n")
 
+## ---------------------------
+## 5.6 优化预测矩阵
+## ---------------------------
+cat("\n  5.6 优化预测矩阵\n")
+
+## 使用 quickpred 生成稀疏预测矩阵
+pred <- quickpred(
+  dat_for_mi, 
+  mincor = 0.2,      ## 只保留相关性 >0.2 的预测变量
+  minpuc = 0.3,      ## 预测变量至少在 30% 样本中可用
+  include = c("age", "gender", "EF_baseline", "LVEDV_baseline"),  ## 强制包含核心变量
+  exclude = c("ID", "has_fu_echo")
+)
+
+## 手动调整关键变量的预测设置
+outcome_cols <- c("LVESV_fu", "EF_fu")
+for (var in outcome_cols) {
+  if (var %in% rownames(pred)) {
+    ## 结局变量可被所有变量预测
+    pred[var, ] <- ifelse(colnames(pred) %in% c("ID", "has_fu_echo", var), 0, 1)
+  }
+}
+
+## 验证预测矩阵密度
+pred_density <- sum(pred) / (nrow(pred) * ncol(pred))
+cat("    预测矩阵密度:", round(pred_density * 100, 1), "% (推荐 <20%)\n")
+
 ## ═══════════════════════════════════════════════════════
 ## 步骤 6: 执行多重插补
 ## ═══════════════════════════════════════════════════════
@@ -788,25 +875,47 @@ if ("ΔLVEDV" %in% names(meth)) {
 }
 cat("    Lesion_no 方法    :", meth["Lesion_no"], "(应为 pmm)\n")
 
-m <- 20
-maxit <- 15
-seed <- 20240101
+## 第一阶段: 快速测试
+m_test <- 2
+maxit_test <- 3
+
+cat("\n  阶段 1: 小规模测试 (m=", m_test, ", maxit=", maxit_test, ")\n")
 
 set.seed(seed)
+imp_test <- mice(
+  dat_for_mi,
+  m = m_test,
+  maxit = maxit_test,
+  method = meth,
+  predictorMatrix = pred,
+  printFlag = TRUE,   ## 显示进度
+  seed = seed
+)
 
-cat("\n  参数: m =", m, ", maxit =", maxit, "\n")
-cat("  开始插补...\n\n")
+## 检查测试结果
+if (class(imp_test)[1] != "mids") {
+  stop("测试插补失败！请检查数据和方法设置。")
+}
 
+cat("\n  ✓ 测试插补成功\n")
+cat("    日志事件数:", ifelse(is.null(imp_test$loggedEvents), 0, nrow(imp_test$loggedEvents)), "\n")
+
+## 第二阶段: 完整插补
+m <- 20
+maxit <- 10  ## 从 15 降低到 10
+seed <- 20240101
+cat("\n  阶段 2: 完整插补 (m=", m, ", maxit=", maxit, ")\n")
+
+set.seed(seed)
 imp <- mice(
   dat_for_mi,
   m = m,
   maxit = maxit,
   method = meth,
   predictorMatrix = pred,
-  printFlag = FALSE,
+  printFlag = TRUE,
   seed = seed
 )
-
 cat("\n  ✓ 插补完成\n")
 
 ## 检查日志事件
@@ -828,7 +937,7 @@ if (! is.null(imp$loggedEvents) && nrow(imp$loggedEvents) > 0) {
 }
 
 ## 保存
-saveRDS(imp, file. path(outputs_dir, "mice_imputation_final.rds"))
+saveRDS(imp, file.path(outputs_dir, "mice_imputation_final.rds"))
 saveRDS(dat_for_mi, file.path(outputs_dir, "data_for_mi_final.rds"))
 
 cat("\n  ✓ 插补对象已保存\n\n")
@@ -845,7 +954,7 @@ imp_data_1 <- complete(imp, 1)
 imputation_diagnostic <- data.frame(
   variable = names(dat_for_mi),
   original_missing = colSums(is.na(dat_for_mi)),
-  after_imputation_missing = colSums(is. na(imp_data_1))
+  after_imputation_missing = colSums(is.na(imp_data_1))
 ) %>%
   filter(original_missing > 0) %>%
   mutate(
