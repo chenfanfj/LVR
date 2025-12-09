@@ -20,7 +20,16 @@ cat("╚════════════════════════
 
 cat("【步骤 1】读取插补对象\n")
 
-imp <- readRDS(here::here("outputs", "mice_imputation_object.rds"))
+imp <- readRDS(here::here("outputs", "mice_imputation_final.rds"))
+
+# 检查 'has_fu_echo' 和 'LVEDV_fu' 是否存在于完整数据中
+check_data <- complete(imp, 1)
+
+if(!all(c("has_fu_echo", "LVEDV_fu") %in% names(check_data))) {
+  stop("严重错误：结局或选择变量在插补对象中缺失！")
+} else {
+  message("桥梁验证通过：数据已准备好进行 IPW。")
+}
 
 cat("  插补数据集数 (m):", imp$m, "\n")
 cat("  样本数          :", nrow(imp$data), "\n")
@@ -97,11 +106,11 @@ cat("【步骤 4】合并倾向性评分模型系数\n")
 pooled_ps <- pool(fit_ps_list)
 
 ps_coef_summary <- summary(pooled_ps, conf.int = TRUE) %>%
-  as.data. frame() %>%
+  as.data.frame() %>%
   mutate(
     OR = round(exp(estimate), 3),
     CI_95 = paste0(round(exp(`2. 5 %`), 3), " - ", round(exp(`97.5 %`), 3)),
-    p = format. pval(p.value, digits = 3, eps = 0.001)
+    p = format.pval(p.value, digits = 3, eps = 0.001)
   ) %>%
   select(term, estimate, OR, CI_95, p)
 
@@ -132,7 +141,7 @@ cat("  包含", imp$m, "个插补数据集\n\n")
 cat("  计算倾向性评分和权重.. .\n")
 
 imputed_data_with_ps <- imputed_data_long %>%
-  group_by(. imp) %>%
+  group_by(.imp) %>%
   group_modify(~ {
     
     ## 在当前插补数据集上拟合模型
@@ -195,7 +204,7 @@ weight_summary <- imputed_data_with_ps %>%
     sw_max = max(sw_trunc, na.rm = TRUE),
     sw_sd = sd(sw_trunc, na.rm = TRUE),
     
-    . groups = "drop"
+    .groups = "drop"
   )
 
 cat("\n  权重摘要（前5个插补数据集）:\n")
@@ -228,7 +237,7 @@ if (n_extreme > 0) {
 ## 保存权重摘要
 write.csv(weight_summary,
           here::here("outputs", "ipw_weights_summary_by_imputation.csv"),
-          row. names = FALSE)
+          row.names = FALSE)
 
 cat("\n  ✓ 权重摘要已保存\n\n")
 
@@ -276,7 +285,7 @@ ggsave(here::here("plots", "ps_distribution_by_imputation.png"),
 cat("  ✓ 倾向性评分分布图已保存\n")
 
 ## 权重分布箱线图
-p_weights <- ggplot(weight_summary, aes(x = factor(. imp), y = sw_mean)) +
+p_weights <- ggplot(weight_summary, aes(x = factor(.imp), y = sw_mean)) +
   geom_point(size = 3, color = "#3498DB") +
   geom_errorbar(aes(ymin = sw_mean - sw_sd, 
                     ymax = sw_mean + sw_sd),
@@ -331,10 +340,63 @@ saveRDS(outcome_data,
 cat("  ✓ 结局分析数据已保存\n\n")
 
 ## ═══════════════════════════════════════════════════════
-## 步骤 9: 协变量平衡性检查（示例：第1个插补数据集）
+## 步骤 10: 最终加权结局分析 
 ## ═══════════════════════════════════════════════════════
 
-cat("【步骤 9】协变量平衡性检查（示例）\n")
+library(survey)
+library(mitools)
+
+cat("【步骤 11】拟合加权结局模型并合并结果\n")
+
+# 1. 读取数据 
+data_long <- read.csv(here::here("outputs", "outcome_analysis_data_with_weights.csv"))
+
+# 2. 转换为插补列表
+imp_list <- split(data_long, data_long$.imp)
+imputation_list_obj <- mitools::imputationList(imp_list)
+
+# 3. 定义调查设计 (Survey Design)
+# 【修改点】: 如果 ID 是医院编号，使用 ids = ~ID 处理聚类。
+# 如果 ID 是患者编号(不重复)，使用 ids = ~1。此处假设为医院编号。
+svy_design <- svydesign(ids = ~1, weights = ~sw_trunc, data = imputation_list_obj)
+
+# 4. 定义模型公式
+# 【修改点】: ΔLVEDV 是连续变量，适合直接做因变量。
+# 这里的变量列表建议包含：金属(暴露) + 核心临床混杂因素(双重稳健)。
+# 不需要再做逻辑回归筛选，直接纳入重要的临床变量。
+# 请根据实际列名修改下方的变量名
+out_formula <- as.formula("ΔLVEDV ~ Cu + Zn + Fe + Se + Pb + age + gender + hypertension + DM + smoking")
+
+cat("  拟合模型 (线性回归，因变量为连续值)...\n")
+# svyglm 默认 family=gaussian，即线性回归，适合连续变量
+fit_results <- with(svy_design, svyglm(out_formula))
+
+# 5. 合并结果 (Pooling)
+# 这是最后一步，将 20 个模型的结果整合
+pooled_estimates <- MIcombine(fit_results)
+
+# 6. 提取结果
+summary_output <- summary(pooled_estimates) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Term") %>%
+  mutate(
+    Beta = results, # 连续变量回归系数
+    Lower_95 = results - 1.96 * se,
+    Upper_95 = results + 1.96 * se,
+    P_Value = 2 * (1 - pnorm(abs(results / se)))
+  )
+
+cat("\n  最终合并后的结果 (Beta系数):\n")
+print(summary_output)
+
+# 7. 保存
+write.csv(summary_output, here::here("outputs", "Final_Pooled_IPW_Results.csv"))
+
+## ═══════════════════════════════════════════════════════
+## 步骤 10: 协变量平衡性检查（示例：第1个插补数据集）
+## ═══════════════════════════════════════════════════════
+
+cat("【步骤 10】协变量平衡性检查（示例）\n")
 
 ## 使用第1个插补数据集
 dat_imp1 <- imputed_data_with_ps %>% filter(.imp == 1)
@@ -397,7 +459,7 @@ print(balance_results, row.names = FALSE)
 
 write.csv(balance_results,
           here::here("outputs", "covariate_balance_smd_imp1.csv"),
-          row. names = FALSE)
+          row.names = FALSE)
 
 n_balanced <- sum(balance_results$balanced, na.rm = TRUE)
 n_total <- sum(! is.na(balance_results$balanced))
@@ -414,10 +476,10 @@ if (n_balanced / n_total < 0.8) {
 cat("\n")
 
 ## ═══════════════════════════════════════════════════════
-## 步骤 10: 生成综合报告
+## 步骤 11: 生成综合报告
 ## ═══════════════════════════════════════════════════════
 
-cat("【步骤 10】生成综合报告\n")
+cat("【步骤 11】生成综合报告\n")
 
 report_path <- here::here("outputs", "IPW_Construction_Report.txt")
 
