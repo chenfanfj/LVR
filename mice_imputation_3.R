@@ -354,7 +354,7 @@ exclude_vars <- c(
   "BMI", "ΔLVEDV", "AST_ALT", "BUN_CREA", "APROB_APROA",
   
   ## 结局变量（不应插补）
-  "LVEDV_fu",
+  "LVEDV_fu", "LVESV_fu", "EF_fu",
   
   ## 高共线性变量（基于 VIF 分析）
   "LVESV_baseline",  ## VIF=79.87
@@ -795,7 +795,7 @@ missing_counts <- data.frame(
 vars_need_imputation <- missing_counts %>%
   filter(
     n_missing > 0,
-    !variable %in% c("ID", "has_fu_echo", "LVEDV_fu", "ΔLVEDV")
+    !variable %in% c("ID", "has_fu_echo", "LVEDV_fu", "ΔLVEDV", "LVESV_fu", "EF_fu")
   ) %>%
   pull(variable)
 
@@ -1235,10 +1235,11 @@ if (length(imputed_numeric_vars) == 0) {
   
   ## 绘图
   plot_success <- tryCatch({
-    png(file.path(plots_dir, "mi_convergence. png"),
+    png(file.path(plots_dir, "mi_convergence.png"),
         width = 14, height = 12, units = "in", res = 300)
     
-    plot(imp, plot_vars_conv, layout = c(4, 5))
+    # 【关键修复】: 必须使用 print() 包裹 plot() 命令
+    print(plot(imp, plot_vars_conv, layout = c(4, 5)))
     
     dev.off()
     
@@ -1248,6 +1249,8 @@ if (length(imputed_numeric_vars) == 0) {
     cat("    ✗ 收敛性图生成失败:", conditionMessage(e), "\n")
     FALSE
   }, warning = function(w) {
+    # 即使有警告也要确保关闭设备
+    if (dev.cur() > 1) dev.off() 
     cat("    ⚠ 警告:", conditionMessage(w), "\n")
     TRUE
   })
@@ -1306,9 +1309,10 @@ if (length(imputed_numeric_vars) == 0) {
       png(file.path(plots_dir, "mi_density.png"),
           width = 12, height = 9, units = "in", res = 300)
       
-      densityplot(imp, 
-                  as.formula(paste("~", paste(density_vars_plot, collapse = " + "))),
-                  layout = c(3, 3))
+      # 【关键修复】: 必须使用 print() 包裹 densityplot() 命令
+      print(densityplot(imp, 
+                        as.formula(paste("~", paste(density_vars_plot, collapse = " + "))),
+                        layout = c(3, 3)))
       
       dev.off()
       
@@ -1349,9 +1353,10 @@ if (length(imputed_numeric_vars) >= 3) {
     png(file.path(plots_dir, "mi_stripplot_key_vars.png"),
         width = 12, height = 8, units = "in", res = 300)
     
-    stripplot(imp, 
-              as.formula(paste("~", paste(strip_vars, collapse = " + "))),
-              pch = c(1, 20), cex = c(1, 1.5))
+    # 【关键修复】: 必须使用 print() 包裹 stripplot() 命令
+    print(stripplot(imp, 
+                    as.formula(paste("~", paste(strip_vars, collapse = " + "))),
+                    pch = c(1, 20), cex = c(1, 1.5)))
     
     dev.off()
     
@@ -1655,7 +1660,6 @@ cat("质量控制:\n")
 cat("  ✓ 检查IPW权重分布 (范围、极端值)\n")
 cat("  ✓ 敏感性分析: 比较不同m值的结果稳定性\n")
 cat("  ✓ 完整案例分析: 对比IPW加权与未加权结果\n")
-cat("  ✓ 检查高缺失变量插补质量 (LVESV_fu, EF_fu)\n\n")
 
 ## ─────────────────────────────
 ## 10. 重要注意事项
@@ -1664,7 +1668,6 @@ cat("10. 重要注意事项\n")
 cat("─────────────────────────────────────\n")
 
 cat("插补局限性:\n")
-cat("  ⚠ LVESV_fu 和 EF_fu 缺失率>40%, 插补不确定性大\n")
 cat("  ⚠ 金属暴露全部缺失同一批样本 (167例), 可能MNAR\n")
 cat("  ⚠ BMI完全缺失但通过被动插补重构, 需验证合理性\n\n")
 
