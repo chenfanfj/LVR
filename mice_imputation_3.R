@@ -374,9 +374,15 @@ imputation_vars <- setdiff(
   exclude_vars
 )
 
-## 准备插补数据
+## 准备插补变量，显式选择 ID 和 结局变量
 dat_for_mi <- dat %>%
-  select(ID, all_of(imputation_vars))
+  select(
+    ID, 
+    LVEDV_fu, LVESV_fu, EF_fu,  ## 手动加回结局变量
+    all_of(imputation_vars)
+  )
+
+cat("  最终数据包含列数:", ncol(dat_for_mi), "\n")
 
 cat("  最终插补变量数:", length(imputation_vars), "\n")
 cat("    - 结局变量  :", length(intersect(outcome_vars, imputation_vars)), "个\n")
@@ -862,6 +868,17 @@ pred <- ini$predictorMatrix
 meth["ID"] <- ""
 pred[, "ID"] <- 0
 pred["ID", ] <- 0
+## 【修改 3】 结局变量配置：存在但不插补 (模仿 ID 的处理)
+outcomes_kept <- c("LVEDV_fu", "LVESV_fu", "EF_fu")
+
+for (var in outcomes_kept) {
+  if (var %in% names(meth)) {
+    meth[var] <- ""       ## 方法为空：不插补
+    pred[var, ] <- 0      ## 行全为0：不预测其他变量 (防止泄露结局信息)
+    pred[, var] <- 0      ## 列全为0：不被其他变量预测 (虽然它有缺失，但我们不想补)
+    cat("    ✓ 结局变量 [", var, "] 已设置为: 保留但不插补\n")
+  }
+}
 
 ## 【关键】完整预测变量不插补
 for (var in complete_predictors) {
