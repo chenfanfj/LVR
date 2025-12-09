@@ -1,33 +1,27 @@
 ############################################################
-## 多重插补 (MI) - 完整修复版
+## 多重插补 (MI) 
 ## 用途: 为 IPW 倾向性评分建模准备高质量插补数据
-## 修复日期: 2025-12-08
+## 修复日期: 2025-12-09
 ############################################################
 
 ## ═══════════════════════════════════════════════════════
 ## 环境设置
 ## ═══════════════════════════════════════════════════════
-
-## 清理环境
 rm(list = ls())
 gc()
-
-## 强制释放内存
 invisible(gc())
+
+## 统一设置随机种子
+GLOBAL_SEED <- 20240101
+set.seed(GLOBAL_SEED)
+
 memory_limit <- memory.size()
 cat("当前内存限制:", memory_limit, "MB\n")
 
-if (memory_limit < 1e4) {
-  cat("警告: 内存可能不足！\n")
-}
-
-## 【修复 1】统一设置随机种子
-set.seed(20240101)
-GLOBAL_SEED <- 20240101
-
 cat("\n╔═══════════════════════════════════════════════════════╗\n")
-cat("║        多重插补 (MI) 流程 - 修复版               ║\n")
+cat("║        多重插补 (MI) 流程              ║\n")
 cat("╚═══════════════════════════════════════════════════════╝\n\n")
+cat("全局随机种子:", GLOBAL_SEED, "\n\n")
 
 ## 加载包
 packages <- c(
@@ -62,25 +56,37 @@ dir.create(plots_dir, showWarnings = FALSE, recursive = TRUE)
 cat("【步骤 1】数据读取\n")
 
 data_path <- here::here("data", "AMI_PCI_metal_clean3.xlsx")
+## 先读取原始数据
 dat_raw <- readxl::read_excel(
   path = data_path,
   col_names = TRUE,
   na = c("", "NA", "N/A", "#N/A", "NULL", "null", "-999", "-9999")
 )
 
-cat("  原始数据:", nrow(dat_raw), "行 ×", ncol(dat_raw), "列\n\n")
+cat("  原始数据:", nrow(dat_raw), "行 ×", ncol(dat_raw), "列\n")
+
+## 立即检查关键变量的原始状态
+cat("\n  关键变量原始状态检查:\n")
+
+key_check_vars <- c("STEMI", "pPCI", "gender", "DM", "hypertension")
+
+for (var in intersect(key_check_vars, names(dat_raw))) {
+  cat("    ", var, ":\n")
+  cat("      类型:", class(dat_raw[[var]]), "\n")
+  cat("      唯一值:", paste(head(unique(dat_raw[[var]]), 5), collapse=", "), "\n")
+  cat("      缺失数:", sum(is.na(dat_raw[[var]])), "\n")
+}
+
+cat("\n")
 
 ## ═══════════════════════════════════════════════════════
-## 步骤 2: 数据清洗（保留原始步骤）
+## 步骤 2: 数据清洗
 ## ═══════════════════════════════════════════════════════
 
 cat("【步骤 2】数据清洗\n")
-
 dat <- dat_raw
 
-## ---------------------------
 ## 2.1 标准化缺失值
-## ---------------------------
 cat("  2.1 标准化缺失值\n")
 
 for (col in names(dat)) {
@@ -92,9 +98,7 @@ for (col in names(dat)) {
   }
 }
 
-## ---------------------------
-## 2.2 处理含不等号的变量
-## ---------------------------
+## 2.2 处理含不等号的变量（保持原有逻辑）
 cat("  2.2 处理含不等号的变量\n")
 
 vars_with_symbols <- c(
@@ -145,9 +149,7 @@ if (nrow(cleaning_log) > 0) {
             row.names = FALSE)
 }
 
-## ---------------------------
 ## 2.3 创建目标变量
-## ---------------------------
 cat("\n  2.3 创建目标变量\n")
 
 dat <- dat %>%
@@ -165,10 +167,34 @@ cat("    有随访:", fu_summary["Yes"], "例 (",
 cat("    无随访:", fu_summary["No"], "例 (", 
     round(fu_summary["No"]/sum(fu_summary)*100, 1), "%)\n")
 
-## ---------------------------
-## 2.4 极端值处理（Winsorization）
-## ---------------------------
-cat("\n  2.4 极端值处理\n")
+## 在清洗后立即验证关键二元变量
+cat("\n  2.4 验证关键二元变量\n")
+
+binary_vars_to_check <- c(
+  "STEMI", "pPCI", "gender", "DM", "hypertension", 
+  "smoking", "AF", "ST_dev", "ST_dep"
+)
+
+for (var in intersect(binary_vars_to_check, names(dat))) {
+  if (is.numeric(dat[[var]])) {
+    unique_vals <- sort(unique(na.omit(dat[[var]])))
+    n_missing <- sum(is.na(dat[[var]]))
+    
+    cat("    ", var, ": 唯一值=", paste(unique_vals, collapse=","), 
+        ", 缺失=", n_missing, "\n")
+    
+    ## 如果不是标准的 0/1，发出警告
+    if (! all(unique_vals %in% c(0, 1))) {
+      cat("      ⚠ 警告:", var, "的值域异常！\n")
+    }
+  } else {
+    cat("    ", var, ": 类型=", class(dat[[var]]), 
+        " (应为 numeric)\n")
+  }
+}
+
+## 2.5 极端值处理（保持原有逻辑）
+cat("\n  2. 5 极端值处理\n")
 
 continuous_vars_for_winsorize <- c(
   "age", "height", "weight", "BMI", "HR", "SBP", "DBP",
@@ -211,11 +237,12 @@ cat("    处理了", winsorize_count, "个变量的极端值\n")
 
 cat("\n  ✓ 数据清洗完成\n\n")
 
+
 ## ═══════════════════════════════════════════════════════
 ## 步骤 3: 变量选择（基于 VIF 分析优化）
 ## ═══════════════════════════════════════════════════════
 
-cat("【步骤 3】插补变量选择（优化版）\n")
+cat("【步骤 3】插补变量选择\n")
 
 ## ---------------------------
 ## 3.1 定义变量分组
@@ -233,7 +260,7 @@ exposure_vars <- c(
   "Rb", "Sb", "Sn", "Sr", "V", "Ba", "B", "Li"
 )
 
-## 【修复 2】IPW 模型协变量 - 移除高共线性和高缺失变量
+## IPW 模型协变量 - 移除高共线性和高缺失变量
 ipw_covariates <- c(
   ## 人口学
   "age", "gender", "resident", "Career",
@@ -312,11 +339,11 @@ exclude_vars <- c(
   ## 结局变量（不应插补）
   "LVEDV_fu",
   
-  ## 【新增】高共线性变量（基于 VIF 分析）
+  ## 高共线性变量（基于 VIF 分析）
   "LVESV_baseline",  ## VIF=79.87
   "CK",              ## VIF=9.76
   
-  ## 【新增】高缺失变量（基于单变量分析）
+  ## 高缺失变量（基于单变量分析）
   "Anterior_MI", "Inferior_MI", "Lateral_MI", "Posterior_MI",  ## 46-47% 缺失
   "LAD", "LCX", "RCA", "LM",                                    ## 46-47% 缺失
   "TL_LAD", "TL_LCX", "TL_RCA",                                 ## 46-47% 缺失
@@ -386,7 +413,7 @@ dev.off()
 cat("    ✓ 缺失分析完成\n\n")
 
 ## ---------------------------
-## 【修复 4】3.4 应用分层缺失率阈值
+## 3.4 应用分层缺失率阈值
 ## ---------------------------
 cat("  3.4 应用分层缺失率阈值\n")
 
@@ -546,9 +573,9 @@ if (length(vars_to_remove) > 0) {
 }
 
 ## ---------------------------
-## 【修复 5】4.2 优化的共线性检查
+## 4.2 共线性检查
 ## ---------------------------
-cat("\n  4.2 检查共线性（优化版）\n")
+cat("\n  4.2 检查共线性\n")
 
 ## 仅对数值变量进行检查
 numeric_cols <- sapply(dat_for_mi, is.numeric)
@@ -633,7 +660,7 @@ if (length(numeric_vars) > 1) {
     } else {
       cat("    ⊙ 相关性计算失败，启用备用清理策略\n")
       
-      ## 【修复 6】优化的备用清理策略
+      ## 优化的备用清理策略
       problematic_vars <- character()
       
       ## 随机采样变量进行测试（提高效率）
@@ -897,156 +924,248 @@ for (var in passive_vars) {
   }
 }
 
-## ---------------------------
-## 5.5 重新同步（修复版）
-## ---------------------------
-cat("\n  5.5 同步配置（修复版）\n")
+## ═══════════════════════════════════════════════════════
+## 5.5 重新同步
+## ═══════════════════════════════════════════════════════
+cat("\n  5.5 同步配置\n")
 
-## 因为添加了 BMI，需要重新初始化
+## ─────────────────────────────────────────────────────
+## 先在数值状态下初始化 mice
+## ─────────────────────────────────────────────────────
+
+## 确保所有二元变量都是数值型 0/1
+binary_vars <- c(
+  "gender", "DM", "hypertension", "smoking", "Cancer", 
+  "his_stroke", "AF", "pPCI", "VF", "Cardio_shock",
+  "STEMI", "ST_dev", "ST_dep", "Cardiac_arrest_in",
+  "resident", "Career",
+  "Aspirin", "Statin", "ACEIorARB", "β_block"
+)
+
+cat("    确保二元变量为数值型:\n")
+
+for (var in intersect(binary_vars, names(dat_for_mi))) {
+  if (is.factor(dat_for_mi[[var]])) {
+    dat_for_mi[[var]] <- as.numeric(dat_for_mi[[var]]) - 1
+    cat("      ", var, ": factor → numeric\n")
+  } else if (is.numeric(dat_for_mi[[var]])) {
+    ## 验证是否为 0/1
+    unique_vals <- sort(unique(na.omit(dat_for_mi[[var]])))
+    if (!  all(unique_vals %in% c(0, 1))) {
+      cat("      ⚠", var, ": 值域异常 (", paste(unique_vals, collapse=","), ")\n")
+    }
+  }
+}
+
+## ─────────────────────────────────────────────────────
+## 初始化 mice (此时所有二元变量都是数值型)
+## ─────────────────────────────────────────────────────
+
 ini_final <- mice(dat_for_mi, maxit = 0, print = FALSE)
 
 meth_final <- ini_final$method
 pred_final <- ini_final$predictorMatrix
 
-## ─────────────────────────────
-## 恢复核心设置
-## ─────────────────────────────
+cat("    初始化后检查关键变量方法:\n")
+cat("      STEMI 初始方法:", meth_final["STEMI"], "\n")
 
-## 1. ID 不插补
+## ─────────────────────────────────────────────────────
+## 恢复核心设置
+## ─────────────────────────────────────────────────────
+
 meth_final["ID"] <- ""
 pred_final[, "ID"] <- 0
 pred_final["ID", ] <- 0
 
-## 2.  has_fu_echo 不插补
 meth_final["has_fu_echo"] <- ""
 pred_final["has_fu_echo", ] <- 0
 pred_final[, "has_fu_echo"] <- 0
 
-## 3.  结局变量不插补
 if ("LVEDV_fu" %in% names(meth_final)) {
   meth_final["LVEDV_fu"] <- ""
 }
-
 if ("ΔLVEDV" %in% names(meth_final)) {
   meth_final["ΔLVEDV"] <- ""
 }
 
-## ─────────────────────────────
-## 恢复二元变量设置（增强版）
-## ─────────────────────────────
-cat("    恢复二元变量方法:\n")
+## ─────────────────────────────────────────────────────
+## 配置二元变量插补方法（关键修复）
+## ─────────────────────────────────────────────────────
+cat("\n    配置二元变量插补方法:\n")
 
 for (var in intersect(binary_vars, names(meth_final))) {
-  ## 跳过已排除的变量
-  if (meth_final[var] == "") next
   
-  ## 检查当前数据类型
-  is_factor_now <- is.factor(dat_for_mi[[var]])
-  is_numeric_now <- is.numeric(dat_for_mi[[var]])
+  ## 检查是否有缺失
+  n_missing <- sum(is.na(dat_for_mi[[var]]))
   
-  if (is_factor_now) {
-    ## 因子变量：检查事件数
-    tab <- table(na.omit(dat_for_mi[[var]]))
+  if (n_missing == 0) {
+    ## 无缺失:  不插补，但需要决定是否转为因子
+    meth_final[var] <- ""
     
-    if (length(tab) == 2) {
-      min_events <- min(tab)
+    ## 检查事件数
+    if (is.numeric(dat_for_mi[[var]])) {
+      n_0 <- sum(dat_for_mi[[var]] == 0, na.rm = TRUE)
+      n_1 <- sum(dat_for_mi[[var]] == 1, na.rm = TRUE)
       
-      if (min_events < 10) {
-        ## 事件数太少：转为数值型 + PMM
-        dat_for_mi[[var]] <- as.numeric(dat_for_mi[[var]]) - 1
-        meth_final[var] <- "pmm"
-        cat("      ", var, ": logreg → pmm (事件数=", min_events, ")\n")
+      if (min(n_0, n_1) >= 10) {
+        ## 转为因子 (用于后续模型)
+        dat_for_mi[[var]] <- factor(dat_for_mi[[var]], 
+                                    levels = c(0, 1), 
+                                    labels = c("No", "Yes"))
+        cat("      ", var, ": 无缺失, 转为因子 (事件=", min(n_0, n_1), ")\n")
       } else {
-        ## 事件数足够：使用 logreg
-        meth_final[var] <- "logreg"
-        cat("      ", var, ": logreg (事件数=", min_events, ")\n")
+        cat("      ", var, ": 无缺失, 保持数值 (事件=", min(n_0, n_1), " <10)\n")
       }
-    } else {
-      ## 水平数异常
-      cat("      ⚠", var, ": 因子水平数=", length(tab), "，改用pmm\n")
-      dat_for_mi[[var]] <- as.numeric(dat_for_mi[[var]]) - 1
-      meth_final[var] <- "pmm"
     }
     
-  } else if (is_numeric_now) {
-    ## 数值型变量（已被转换）：使用 PMM
-    unique_vals <- unique(na.omit(dat_for_mi[[var]]))
+  } else {
+    ## 有缺失: 需要插补
     
-    if (all(unique_vals %in% c(0, 1))) {
-      meth_final[var] <- "pmm"
-      cat("      ", var, ": pmm (数值型0/1)\n")
-    } else {
-      cat("      ⚠", var, ": 数值异常，值域=", paste(head(unique_vals, 5), collapse=","), "\n")
+    if (is.numeric(dat_for_mi[[var]])) {
+      unique_vals <- sort(unique(na.omit(dat_for_mi[[var]])))
+      
+      if (all(unique_vals %in% c(0, 1))) {
+        n_0 <- sum(dat_for_mi[[var]] == 0, na.rm = TRUE)
+        n_1 <- sum(dat_for_mi[[var]] == 1, na.rm = TRUE)
+        min_events <- min(n_0, n_1)
+        
+        if (min_events >= 10) {
+          ## 事件数足够:  转为因子 + logreg
+          dat_for_mi[[var]] <- factor(dat_for_mi[[var]], 
+                                      levels = c(0, 1), 
+                                      labels = c("No", "Yes"))
+          meth_final[var] <- "logreg"
+          cat("      ", var, ": logreg, 缺失=", n_missing, 
+              ", 事件=", min_events, "\n")
+        } else {
+          ## 事件数太少: 保持数值 + PMM
+          meth_final[var] <- "pmm"
+          cat("      ", var, ": pmm, 缺失=", n_missing, 
+              ", 事件=", min_events, " <10\n")
+        }
+      } else {
+        cat("      ⚠", var, ":  值域异常, 使用 pmm\n")
+        meth_final[var] <- "pmm"
+      }
     }
   }
 }
 
-## ─────────────────────────────
+## ─────────────────────────────────────────────────────
 ## 恢复有序变量
-## ─────────────────────────────
+## ─────────────────────────────────────────────────────
 cat("\n    恢复有序变量方法:\n")
 
+ordinal_vars <- c("IN_killip", "OUT_killip", "GRACE_in_str")
+
 for (var in intersect(ordinal_vars, names(meth_final))) {
-  if (meth_final[var] == "") next
+  n_missing <- sum(is.na(dat_for_mi[[var]]))
   
-  if (var %in% names(dat_for_mi) && is.ordered(dat_for_mi[[var]])) {
-    ## 检查水平数
-    n_levels <- nlevels(dat_for_mi[[var]])
+  if (n_missing == 0) {
+    meth_final[var] <- ""
+    cat("      ", var, ": 无缺失, 不插补\n")
+  } else if (var %in% names(dat_for_mi) && is.ordered(dat_for_mi[[var]])) {
     tab <- table(na.omit(dat_for_mi[[var]]))
     min_per_level <- min(tab)
     
-    if (min_per_level < 5) {
-      ## 某水平样本量太少，改用PMM
-      cat("      ⚠", var, ": polr → pmm (最小水平样本=", min_per_level, ")\n")
+    if (min_per_level >= 5) {
+      meth_final[var] <- "polr"
+      cat("      ", var, ": polr, 缺失=", n_missing, "\n")
+    } else {
       dat_for_mi[[var]] <- as.numeric(dat_for_mi[[var]])
       meth_final[var] <- "pmm"
-    } else {
-      meth_final[var] <- "polr"
-      cat("      ", var, ": polr (水平数=", n_levels, ")\n")
+      cat("      ⚠", var, ":  polr → pmm (最小水平=", min_per_level, ")\n")
     }
   }
 }
 
-## ─────────────────────────────
+## ─────────────────────────────────────────────────────
 ## 恢复特殊变量
-## ─────────────────────────────
+## ─────────────────────────────────────────────────────
+cat("\n    恢复特殊变量:\n")
 
 ## Lesion_no
 if ("Lesion_no" %in% names(meth_final)) {
-  meth_final["Lesion_no"] <- "pmm"
-  cat("\n    Lesion_no: pmm\n")
+  n_missing <- sum(is.na(dat_for_mi$Lesion_no))
+  
+  if (n_missing > 0) {
+    if (is.factor(dat_for_mi$Lesion_no)) {
+      dat_for_mi$Lesion_no <- as.numeric(as.character(dat_for_mi$Lesion_no))
+    }
+    meth_final["Lesion_no"] <- "pmm"
+    cat("      Lesion_no: pmm, 缺失=", n_missing, "\n")
+  } else {
+    meth_final["Lesion_no"] <- ""
+    cat("      Lesion_no: 无缺失, 不插补\n")
+  }
 }
 
 ## BMI (被动插补)
 if ("BMI" %in% names(meth_final)) {
   meth_final["BMI"] <- "~I(weight / (height/100)^2)"
   pred_final["BMI", ] <- 0
-  cat("    BMI: 被动插补\n")
+  cat("      BMI: 被动插补\n")
 }
 
-## ─────────────────────────────
+## ─────────────────────────────────────────────────────
 ## 最终赋值
-## ─────────────────────────────
+## ─────────────────────────────────────────────────────
 meth <- meth_final
 pred <- pred_final
-## 如果STEMI仍是问题，手动强制设置:
-meth["STEMI"] <- "logreg"
-dat_for_mi$STEMI <- factor(dat_for_mi$STEMI, levels=c(0,1), labels=c("No","Yes"))
 
-cat("\n    同步后: 数据", ncol(dat_for_mi), "列, meth", length(meth), "个\n")
+cat("\n    同步后:  数据", ncol(dat_for_mi), "列, meth", length(meth), "个\n")
 
-## ─────────────────────────────
-## 验证关键变量方法
-## ─────────────────────────────
-cat("\n    关键变量方法验证:\n")
+## ─────────────────────────────────────────────────────
+## 最终验证
+## ─────────────────────────────────────────────────────
+cat("\n    最终验证:\n")
+
+verification_log <- data.frame(
+  variable = character(),
+  method = character(),
+  data_type = character(),
+  n_missing = integer(),
+  status = character(),
+  stringsAsFactors = FALSE
+)
 
 key_vars_check <- c("STEMI", "pPCI", "ST_dev", "hypertension", 
                     "DM", "smoking", "GRACE_in_str", "Lesion_no")
 
 for (kv in intersect(key_vars_check, names(meth))) {
-  cat("      ", kv, ":", meth[kv], 
-      "(数据类型:", class(dat_for_mi[[kv]])[1], ")\n")
+  data_type <- class(dat_for_mi[[kv]])[1]
+  method <- meth[kv]
+  n_missing <- sum(is.na(dat_for_mi[[kv]]))
+  
+  ## 判断状态
+  if (n_missing == 0 && method == "") {
+    status <- "✓ 无缺失,不插补"
+  } else if (n_missing > 0 && method != "") {
+    status <- "✓ 有缺失,已配置"
+  } else if (n_missing == 0 && method != "") {
+    status <- "⚠ 无缺失但配置了方法"
+  } else {
+    status <- "❌ 有缺失但方法为空"
+  }
+  
+  verification_log <- rbind(verification_log, data.frame(
+    variable = kv,
+    method = method,
+    data_type = data_type,
+    n_missing = n_missing,
+    status = status
+  ))
+  
+  cat("      ", kv, ":\n")
+  cat("        方法=", method, ", 类型=", data_type, 
+      ", 缺失=", n_missing, "\n")
+  cat("        ", status, "\n")
 }
+
+## 保存验证日志
+write.csv(verification_log,
+          file.path(outputs_dir, "imputation_method_verification.csv"),
+          row.names = FALSE)
 
 cat("\n  ✓ 配置同步完成\n\n")
 
@@ -1254,57 +1373,76 @@ write.csv(imputation_diagnostic,
           row.names = FALSE)
 
 
-## ─────────────────────────────
-## 7.2 收敛性图
-## ─────────────────────────────
-cat("\n  生成诊断图形（增强版）\n")
+## ═══════════════════════════════════════════════════════
+## 步骤 7. 2: 收敛性图
+## ═══════════════════════════════════════════════════════
 
-## 获取被插补的数值型变量
-imputed_numeric_vars <- character()
+cat("\n  7.2 生成收敛性图\n")
 
-for (var in names(meth)) {
-  ## 跳过不插补的变量
-  if (meth[var] == "" || grepl("^~", meth[var]) || var == "ID") next
+## 获取被插补的变量（排除方法为空的）
+imputed_vars <- names(meth)[
+  meth != "" &                    ## 方法不为空
+    !  grepl("^~", meth) &           ## 不是被动插补
+    names(meth) != "ID" &           ## 不是 ID
+    names(meth) != "has_fu_echo"    ## 不是目标变量
+]
+
+cat("    被插补的变量总数:", length(imputed_vars), "\n")
+
+if (length(imputed_vars) == 0) {
+  cat("    ❌ 错误:  无变量被插补！\n")
+  cat("    诊断信息:\n")
+  cat("      方法不为空的变量:", sum(meth != ""), "个\n")
+  cat("      示例方法:\n")
+  print(head(meth[meth != ""], 10))
   
-  ## 检查是否为数值型（或已转换为数值型的二元变量）
-  if (var %in% names(dat_for_mi)) {
-    if (is.numeric(dat_for_mi[[var]])) {
-      imputed_numeric_vars <- c(imputed_numeric_vars, var)
+} else {
+  ## 筛选数值型变量（用于收敛性图）
+  imputed_numeric_vars <- character()
+  
+  for (var in imputed_vars) {
+    if (var %in% names(dat_for_mi)) {
+      ## 检查原始数据类型（插补前）
+      if (is.numeric(dat_for_mi[[var]])) {
+        imputed_numeric_vars <- c(imputed_numeric_vars, var)
+      }
     }
+  }
+  
+  cat("    可绘制收敛性的数值变量:", length(imputed_numeric_vars), "\n")
+  
+  if (length(imputed_numeric_vars) > 0) {
+    ## 优先选择 IPW 核心变量
+    ipw_core_numeric <- intersect(ipw_core_vars, imputed_numeric_vars)
+    plot_vars_conv <- c(ipw_core_numeric, 
+                        setdiff(imputed_numeric_vars, ipw_core_numeric))
+    plot_vars_conv <- head(plot_vars_conv, 20)
+    
+    cat("    绘制变量:", paste(head(plot_vars_conv, 5), collapse=", "), ".. .\n")
+    
+    tryCatch({
+      png(file.path(plots_dir, "mi_convergence. png"),
+          width = 14, height = 12, units = "in", res = 300)
+      
+      plot(imp, plot_vars_conv, layout = c(4, 5))
+      
+      dev.off()
+      
+      cat("    ✓ 收敛性图已保存\n")
+    }, error = function(e) {
+      dev.off()
+      cat("    ✗ 收敛性图生成失败:", conditionMessage(e), "\n")
+    })
+  } else {
+    cat("    ⊙ 无数值型插补变量，跳过收敛性图\n")
   }
 }
 
-cat("    可绘制收敛性的数值变量:", length(imputed_numeric_vars), "个\n")
-
-if (length(imputed_numeric_vars) > 0) {
-  ## 优先选择IPW核心变量
-  ipw_core_numeric <- intersect(ipw_core_vars, imputed_numeric_vars)
-  plot_vars_conv <- c(ipw_core_numeric, 
-                      setdiff(imputed_numeric_vars, ipw_core_numeric))
-  plot_vars_conv <- head(plot_vars_conv, 20)
-  
-  cat("    绘制收敛性图，变量:", paste(head(plot_vars_conv, 5), collapse=", "), "...\n")
-  
-  tryCatch({
-    png(file.path(plots_dir, "mi_convergence.png"),  ## 修复: 删除空格
-        width = 28, height = 24, units = "in", res = 300)
-    
-    plot(imp, plot_vars_conv, layout = c(4, 5))
-    
-    dev.off()
-    
-    cat("    ✓ 收敛性图已保存\n")
-  }, error = function(e) {
-    dev.off()
-    cat("    ✗ 收敛性图生成失败:", conditionMessage(e), "\n")
-  })
-} else {
-  cat("    ⊙ 无数值型插补变量，跳过收敛性图\n")
-}
-
-## ─────────────────────────────
+## ═══════════════════════════════════════════════════════
 ## 7.3 密度图
-## ─────────────────────────────
+## ═══════════════════════════════════════════════════════
+
+cat("\n  7. 3 生成密度图\n")
 
 ## 从第一个插补数据集中检查变量
 imp_data_1 <- complete(imp, 1)
@@ -1315,7 +1453,6 @@ for (var in imputed_numeric_vars) {
   if (var %in% names(imp_data_1)) {
     vals <- na.omit(imp_data_1[[var]])
     
-    ## 检查: 至少10个观测 + 至少2个唯一值 + 标准差>0
     if (length(vals) >= 10 && 
         length(unique(vals)) >= 2 && 
         sd(vals) > 1e-8) {
@@ -1324,20 +1461,19 @@ for (var in imputed_numeric_vars) {
   }
 }
 
-cat("    可绘制密度图的变量:", length(density_vars), "个\n")
+cat("    可绘制密度图的变量:", length(density_vars), "\n")
 
 if (length(density_vars) >= 3) {
-  ## 优先选择IPW核心变量
   ipw_core_density <- intersect(ipw_core_vars, density_vars)
   density_vars_plot <- c(ipw_core_density, 
                          setdiff(density_vars, ipw_core_density))
   density_vars_plot <- head(density_vars_plot, 9)
   
-  cat("    绘制密度图，变量:", paste(head(density_vars_plot, 5), collapse=", "), "...\n")
+  cat("    绘制变量:", paste(head(density_vars_plot, 5), collapse=", "), "...\n")
   
   tryCatch({
     png(file.path(plots_dir, "mi_density.png"),
-        width = 24, height = 28, units = "in", res = 300)
+        width = 12, height = 9, units = "in", res = 300)
     
     densityplot(imp, 
                 as.formula(paste("~", paste(density_vars_plot, collapse = " + "))),
@@ -1351,11 +1487,11 @@ if (length(density_vars) >= 3) {
     cat("    ✗ 密度图生成失败:", conditionMessage(e), "\n")
   })
 } else {
-  cat("    ⊙ 可绘制变量不足3个，跳过密度图\n")
+  cat("    ⊙ 可绘制变量不足，跳过密度图\n")
 }
 
 ## ─────────────────────────────
-## 7.4 单变量插补质量图（补充）
+## 7.4 单变量插补质量图
 ## ─────────────────────────────
 
 cat("\n  生成单变量插补质量图:\n")
@@ -1424,7 +1560,7 @@ cat("         专用于 IPW 权重构建\n")
 cat("═══════════════════════════════════════════════════════\n\n")
 
 cat("生成时间:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
-cat("随机种子:", seed, "\n\n")
+cat("随机种子:", GLOBAL_SEED, "\n\n") 
 
 ## ─────────────────────────────
 ## 1. 数据清洗
@@ -1513,7 +1649,7 @@ cat("5. 多重插补参数\n")
 cat("─────────────────────────────────────\n")
 cat("插补数据集数 (m)  :", m, "\n")
 cat("最大迭代数 (maxit):", maxit, "\n")
-cat("随机种子 (seed)   :", seed, "\n\n")
+cat("随机种子 (seed)   :", GLOBAL_SEED, "\n\n")
 
 cat("插补方法分布      :\n")
 cat("  ├─ PMM          :", sum(meth == "pmm"), "个 (连续变量 + 低事件数二元变量)\n")
@@ -1741,7 +1877,7 @@ cat("  → 构建IPW权重: 对每个插补数据集拟合倾向性评分模型\
 cat("  → 结局分析: 加权回归分析金属暴露与LVR的关系\n\n")
 
 cat("完成时间:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
-
+cat("全局种子:", GLOBAL_SEED, "\n\n")  
 ############################################################
 ## END
 ############################################################
