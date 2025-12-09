@@ -354,7 +354,7 @@ exclude_vars <- c(
   "BMI", "ΔLVEDV", "AST_ALT", "BUN_CREA", "APROB_APROA",
   
   ## 结局变量（不应插补）
-  "LVEDV_fu", "LVESV_fu", "EF_fu",
+  "LVEDV_fu",
   
   ## 高共线性变量（基于 VIF 分析）
   "LVESV_baseline",  ## VIF=79.87
@@ -868,17 +868,6 @@ pred <- ini$predictorMatrix
 meth["ID"] <- ""
 pred[, "ID"] <- 0
 pred["ID", ] <- 0
-## 【修改 3】 结局变量配置：存在但不插补 (模仿 ID 的处理)
-outcomes_kept <- c("LVEDV_fu", "LVESV_fu", "EF_fu")
-
-for (var in outcomes_kept) {
-  if (var %in% names(meth)) {
-    meth[var] <- ""       ## 方法为空：不插补
-    pred[var, ] <- 0      ## 行全为0：不预测其他变量 (防止泄露结局信息)
-    pred[, var] <- 0      ## 列全为0：不被其他变量预测 (虽然它有缺失，但我们不想补)
-    cat("    ✓ 结局变量 [", var, "] 已设置为: 保留但不插补\n")
-  }
-}
 
 ## 【关键】完整预测变量不插补
 for (var in complete_predictors) {
@@ -918,6 +907,20 @@ for (var in vars_need_imputation) {
     meth[var] <- "pmm"
   }
 }
+
+## 强制设置结局变量不插补、不预测
+## 这是解决问题的核心：变量在数据里，但 mice 会忽略它们
+outcomes_ignored <- c("LVESV_fu", "EF_fu")
+
+for (var in outcomes_ignored) {
+  if (var %in% names(meth)) {
+    meth[var] <- ""        ## 方法为空：不插补
+    pred[var, ] <- 0       ## 行全为0：不预测其他变量
+    pred[, var] <- 0       ## 列全为0：不被其他变量预测
+    cat("    ✓ 强制设置", var, "为不插补 (保留原始缺失)\n")
+  }
+}
+
 
 ## 被动插补 BMI
 if ("BMI" %in% names(dat_for_imputation) && 
