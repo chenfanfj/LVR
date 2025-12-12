@@ -265,7 +265,7 @@ cat("【步骤 3】插补变量选择\n")
 ## 3.1 定义变量分组
 ## ---------------------------
 
-## 结局变量（LVEDV_fu 和 ΔLVEDV 不插补）
+## 结局变量（LVEDV_fu 和 delta_LVEDV 不插补）
 outcome_vars <- c(
   "LVESV_fu", "EF_fu"
 )
@@ -351,7 +351,7 @@ all_imputation_vars <- unique(c(
 ## 【修复 3】明确排除变量清单
 exclude_vars <- c(
   ## 派生变量（稍后被动插补）
-  "BMI", "ΔLVEDV", "AST_ALT", "BUN_CREA", "APROB_APROA",
+  "BMI", "delta_LVEDV", "AST_ALT", "BUN_CREA", "APROB_APROA",
   
   ## 结局变量（不应插补）
   "LVEDV_fu",
@@ -481,7 +481,7 @@ high_miss_to_remove <- miss_summary %>%
       (variable %in% outcome_model_vars & pct_missing > THRESHOLD_OUTCOME) |
       (variable %in% other_auxiliary & pct_missing > THRESHOLD_AUXILIARY),
     ## 保护关键结局
-    ! variable %in% c("has_fu_echo", "LVESV_fu", "EF_fu")
+    ! variable %in% c("has_fu_echo", "LVESV_fu", "EF_fu", "LVEDV_fu")
   ) %>%
   pull(variable)
 
@@ -801,9 +801,10 @@ missing_counts <- data.frame(
 vars_need_imputation <- missing_counts %>%
   filter(
     n_missing > 0,
-    !variable %in% c("ID", "has_fu_echo", "LVEDV_fu", "ΔLVEDV", "LVESV_fu", "EF_fu")
+    !variable %in% c("ID", "has_fu_echo", "delta_LVEDV")
   ) %>%
   pull(variable)
+
 
 ## 不需要插补的变量（完整数据）
 vars_complete <- missing_counts %>%
@@ -908,16 +909,15 @@ for (var in vars_need_imputation) {
   }
 }
 
-## 强制设置结局变量不插补、不预测
-## 这是解决问题的核心：变量在数据里，但 mice 会忽略它们
-outcomes_ignored <- c("LVESV_fu", "EF_fu")
+## 虽然它们在 vars_need_imputation 里（为了混进数据集），但我们要禁止插补
+outcomes_to_skip <- c("LVEDV_fu", "LVESV_fu", "EF_fu")
 
-for (var in outcomes_ignored) {
+for (var in outcomes_to_skip) {
   if (var %in% names(meth)) {
-    meth[var] <- ""        ## 方法为空：不插补
-    pred[var, ] <- 0       ## 行全为0：不预测其他变量
-    pred[, var] <- 0       ## 列全为0：不被其他变量预测
-    cat("    ✓ 强制设置", var, "为不插补 (保留原始缺失)\n")
+    meth[var] <- ""        ## 方法为空：保留缺失值
+    pred[var, ] <- 0       ## 行全为0：不预测其他
+    pred[, var] <- 0       ## 列全为0：不被其他预测
+    cat("    ✓ 已强制锁定结局变量:", var, "(保留NA，不插补)\n")
   }
 }
 
@@ -1671,8 +1671,8 @@ cat("  4.  检查协变量平衡 (bal. tab, SMD<0.1)\n")
 cat("  5. 截断极端权重 (99th percentile)\n\n")
 
 cat("结局模型:\n")
-cat("  1.  计算 ΔLVEDV = LVEDV_fu - LVEDV_baseline\n")
-cat("  2. 拟合加权线性/logistic回归: ΔLVEDV ~ metals + covariates\n")
+cat("  1.  计算 delta_LVEDV = LVEDV_fu - LVEDV_baseline\n")
+cat("  2. 拟合加权线性/logistic回归: delta_LVEDV ~ metals + covariates\n")
 cat("  3. 使用Rubin规则合并多重插补结果\n")
 cat("  4. 报告合并后的估计值与标准误\n\n")
 
