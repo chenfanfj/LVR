@@ -1,0 +1,14 @@
+﻿file,sheet,NO/ID/MNO/name,origin(minssing),origin_file,MI,IPW,clinical_character,echocardiogram,echocardiogram_fu,follow_up,metal,log_metal,matebolism,path
+AMI_PCI_metal_clean3.xlsx,,NO/ID,1,NA,0,0,1,1,1,1,1,0,0,D:\R_try\2026_APMM\data\AMI_PCI_metal_clean3.xlsx
+metabolism.xlsx,original,MNO/name,1,NA,0,0,0,0,0,0,0,0,1,D:\R_try\2026_APMM\data\metabolism.xlsx
+metabolism.xlsx,correction,MNO,1,NA,0,0,0,0,0,0,0,0,1,D:\R_try\2026_APMM\data\metabolism.xlsx
+metabolism.xlsx,matebo,NO,1,NA,0,0,0,0,0,0,0,0,1,D:\R_try\2026_APMM\data\metabolism.xlsx
+mice_imputation_final.rds,,ID,0,AMI_PCI_metal_clean3.xlsx,1,0,1,1,1,0,1,0,0,D:\R_try\2026_APMM\outputs\mice_imputation_final.rds
+data_for_mi_final.rds,,ID,0,AMI_PCI_metal_clean3.xlsx,1,0,1,1,1,0,1,0,0,D:\R_try\2026_APMM\outputs\data_for_mi_final.rds
+outcome_analysis_data_with_weights_extended.rds,,ID,0,mice_imputation_final.rds,1,1,1,1,1,0,1,1,0,D:\R_try\2026_APMM\outputs\4 IPW2_complete\complete_data_with_ipw_imp1_extended.rds
+imputed_data_with_ipw_weights_extended.rds,,ID,0,mice_imputation_final.rds,1,1,1,1,1,0,1,1,0,D:\R_try\2026_APMM\outputs\4 IPW2_complete\imputed_data_with_ipw_weights_extended.rds
+complete_data_with_ipw_imp1_extended.rds,,ID,0,mice_imputation_final.rds,1,1,1,1,1,0,1,1,0,D:\R_try\2026_APMM\outputs\4 IPW2_complete\outcome_analysis_data_with_weights_extended.rds
+mice_imputation_with_metabo.rds,,NO/ID,0,AMI_PCI_metal_clean3.xlsx、metabolism.xlsx,1,0,1,1,1,0,1,0,1,D:\R_try\2026_APMM\outputs\mice_imputation_with_metabo.rds
+imputed_data_with_ipw_survival.rds,,NO/ID,0,AMI_PCI_metal_clean3.xlsx、imputed_data_with_ipw_weights_extended.rds,1,1,1,1,1,1,1,1,0,D:\R_try\2026_APMM\outputs\11 survival_data\imputed_data_with_ipw_survival.rds
+complete_data_with_ipw_survival_imp1.rds,,NO/ID,0,AMI_PCI_metal_clean3.xlsx、imputed_data_with_ipw_weights_extended.rds,1,1,1,1,1,1,1,1,0,D:\R_try\2026_APMM\outputs\11 survival_data\complete_data_with_ipw_survival_imp1.rds
+final_metabolite_list.rds,,MNO/name,0,mice_imputation_with_metabo.rds,0,0,0,0,0,0,0,0,0,D:\R_try\2026_APMM\outputs\13 candidate_metabolites\final_metabolite_list.rds
