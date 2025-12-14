@@ -408,7 +408,7 @@ p_weight <- ggplot(dat_check, aes(x = sw_trunc, fill = has_fu_echo)) +
        subtitle = paste0("ESS = ", round(ESS), " (", round(ESS_pct, 1), "%)")) +
   theme_minimal()
 
-ggsave(here::here("plots", "weight_distribution. png"), p_weight,
+ggsave(here::here("plots", "weight_distribution.png"), p_weight,
        width = 10, height = 6, dpi = 300)
 
 cat("  ✓ 诊断图已保存\n\n")
@@ -512,7 +512,7 @@ if(nrow(new_vars_in_balance) > 0) {
 cat("\n  生成SMD Balance Plot...\n")
 
 if (file.exists(here::here("variable_config.RData"))) {
-  load(here::here("variable_config. RData"))
+  load(here::here("variable_config.RData"))
   
   balance_results <- balance_results %>% 
     left_join(label_mapping %>% select(variable, label = new_label), 
