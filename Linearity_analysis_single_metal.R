@@ -1,7 +1,11 @@
 ############################################################
-## 单金属主效应分析 - 步骤1: 线性关联
+## 单金属主效应分析 - 步骤1: Logistic回归 (新 LVR 定义 + PS 调整)
 ## 输入:  outcome_analysis_data_with_weights_extended.rds
-## 输出: 19种金属的关联结果 + 森林图
+## 输出: 19种金属的关联结果 (OR, AUC) + 森林图
+## 修改: 
+##   1. LVR 定义: 基线 EF >= 50 且 随访 EF_fu < 50
+##   2. 采用倾向性评分 (PS) 处理小样本 (Event=32) 协变量调整
+##   3. 新增 C-statistic (AUC) 输出
 ############################################################
 
 rm(list = ls())
@@ -13,216 +17,118 @@ library(mitools)
 library(ggplot2)
 library(here)
 library(broom)
+library(pROC) # 用于计算 C-statistic (AUC)
+
+# 绘图包
+if(!require(forestploter)) install.packages("forestploter"); library(forestploter)
+if(!require(grid)) library(grid)
+if(!require(showtext)) install.packages("showtext"); library(showtext)
+
+showtext_auto()
 
 cat("\n╔═══════════════════════════════════════════════════════╗\n")
-cat("║     单金属主效应分析 - 线性关联                    ║\n")
+cat("║     单金属主效应分析 - Logistic回归 (PS调整 & AUC)     ║\n")
 cat("╚═══════════════════════════════════════════════════════╝\n\n")
 
 ## ═══════════════════════════════════════════════════════
-## 步骤 1: 加载数据
+## 步骤 1: 加载数据、过滤样本并定义 LVR
 ## ═══════════════════════════════════════════════════════
 
-cat("【步骤 1】加载结局分析数据\n")
+cat("【步骤 1】数据预处理\n")
 
-outcome_data <- readRDS(here:: here("outputs", "4 IPW2_complete", "outcome_analysis_data_with_weights_extended.rds"))
+# 加载数据 (假设路径不变)
+outcome_data <- readRDS(here::here("outputs", "4 IPW2_complete", "outcome_analysis_data_with_weights_extended.rds"))
 
-cat("  数据维度:", dim(outcome_data), "\n")
-cat("  插补数据集数:", length(unique(outcome_data$. imp)), "\n")
-cat("  分析样本数（每个插补）:", nrow(outcome_data) / length(unique(outcome_data$ .imp)), "\n\n")
+# 【关键修改】
+# 1. 过滤基线 EF 正常的患者 (EF >= 50)
+# 2. 定义二分类结局 LVR: 随访 EF_fu < 50
+outcome_data_filtered <- outcome_data %>%
+  filter(EF_baseline >= 50) %>%
+  mutate(
+    LVR = ifelse(EF_fu < 50, 1, 0)
+  )
 
-# 验证结局变量
-cat("  结局变量检查:\n")
-cat("    delta_LVEDV:  ", sum(! is.na(outcome_data$delta_LVEDV)), "个非缺失\n")
-cat("    范围: [", round(min(outcome_data$delta_LVEDV, na.rm=T), 1), ", ",
-    round(max(outcome_data$delta_LVEDV, na.rm=T), 1), "]\n\n")
+n_imps <- length(unique(outcome_data_filtered$.imp))
+
+# 打印新定义下的样本量情况
+cat("  基线正常样本量 (EF >= 50):", nrow(outcome_data_filtered %>% filter(.imp == 1)), "\n")
+cat("  LVR 事件数 (EF_fu < 50):", sum((outcome_data_filtered %>% filter(.imp == 1))$LVR), "\n\n")
 
 ## ═══════════════════════════════════════════════════════
-## 步骤 2: 定义金属列表和协变量
+## 步骤 2: 定义金属列表和用于 PS 的协变量
 ## ═══════════════════════════════════════════════════════
 
-cat("【步骤 2】定义分析变量\n")
-
-# 19种金属
 metals <- c("Cu", "Zn", "Fe", "Se", "Pb", "Al", "As", "Cr", "Mn", "Ni",
             "Mo", "Rb", "Sb", "Sn", "Sr", "V", "Ba", "B", "Li")
 
-cat("  金属数量:", length(metals), "\n")
-cat("   ", paste(head(metals, 10), collapse=", "), "...\n\n")
-
-# 协变量（基于文献和临床重要性）
-covariates_core <- c(
-  # 核心人口学
-  "age", "gender",
-  
-  # 核心心功能
-  "EF_baseline", "LVEDV_baseline",
-  
-  # 核心心肌损伤
-  "cTnIpeak",
-  
-  # 核心治疗
-  "pPCI", "STEMI"
-)
-
-covariates_extended <- c(
-  covariates_core,
-  
-  # 扩展协变量
-  "smoking", "DM", "hypertension",
-  "NTproBNP_peak", "GRACE_in",
-  "WBC", "HGB", "CRP",
-  "CHOL", "LDL", "AST"
-)
-
-cat("  协变量设置:\n")
-cat("    核心模型（Model 1）:", length(covariates_core), "个变量\n")
-cat("    扩展模型（Model 2）:", length(covariates_extended), "个变量\n\n")
+# 待压缩进入 PS 的全量协变量
+covariates_to_ps <- c("age", "gender", "EF_baseline", "LVEDV_baseline", "cTnIpeak", 
+                      "pPCI", "STEMI", "smoking", "DM", "hypertension", 
+                      "NTproBNP_peak", "GRACE_in", "WBC", "HGB", "CRP", 
+                      "CHOL", "LDL", "AST")
 
 ## ═══════════════════════════════════════════════════════
-## 步骤 3: 对数转换验证
+## 步骤 4: 拟合 Logistic 模型 (PS 压缩法 + AUC 计算)
 ## ═══════════════════════════════════════════════════════
 
-cat("【步骤 3】验证对数转换\n")
+cat("【步骤 4】拟合模型并计算 C-statistic\n")
 
-# 选择第一个插补数据集
-dat_check <- outcome_data %>% filter(.imp == 1)
+results_final <- data.frame()
 
-# 检查对数转换后的偏度
-cat("  对数转换后的偏度（前5个金属）:\n")
-
-for(metal in head(metals, 5)) {
-  log_metal <- paste0("log_", metal)
-  
-  if(log_metal %in% names(dat_check)) {
-    vals <- na.omit(dat_check[[log_metal]])
-    skew <- e1071::skewness(vals)
-    
-    cat("    ", metal, ": 偏度 =", round(skew, 2))
-    
-    if(abs(skew) < 1) {
-      cat(" ✓ (轻度偏态)\n")
-    } else if(abs(skew) < 2) {
-      cat(" (中度偏态)\n")
-    } else {
-      cat(" ⚠ (严重偏态)\n")
-    }
-  }
-}
-
-cat("\n")
-
-## ═══════════════════════════════════════════════════════
-## 步骤 4: 拟合单金属模型
-## ═══════════════════════════════════════════════════════
-
-cat("【步骤 4】拟合单金属模型\n")
-
-# 准备存储结果
-results_model1 <- data.frame()
-results_model2 <- data.frame()
-
-# 进度条
-cat("  进度:  ")
-
+# 开始循环分析 19 种金属
 for(i in 1:length(metals)) {
   metal <- metals[i]
   log_metal <- paste0("log_", metal)
   
-  # 进度指示
   if(i %% 5 == 0) cat(i, "..  ")
   
-  # 检查变量存在性
-  if(! log_metal %in% names(outcome_data)) {
-    cat("\n  ⚠ 跳过", metal, ": log变量不存在\n")
-    next
-  }
+  fit_list <- list()
+  auc_vector <- c()
   
-  ## ─────────────────────────────
-  ## Model 1: 核心协变量
-  ## ─────────────────────────────
-  
-  formula_m1 <- as.formula(paste0(
-    "delta_LVEDV ~ ", log_metal, " + ",
-    paste(covariates_core, collapse = " + ")
-  ))
-  
-  # 对每个插补数据集拟合
-  fit_list_m1 <- lapply(1:20, function(imp_i) {
-    dat_i <- outcome_data %>% filter(.imp == imp_i)
+  for(imp_i in 1:n_imps) {
+    # 提取当前插补集
+    dat_i <- outcome_data_filtered %>% filter(.imp == imp_i)
+    
+    # --- 4.1 计算 PS (将协变量压缩为单一得分) ---
+    ps_formula <- as.formula(paste0(log_metal, " ~ ", paste(covariates_to_ps, collapse = " + ")))
+    ps_model <- lm(ps_formula, data = dat_i)
+    dat_i$ps_score <- predict(ps_model)
+    
+    # --- 4.2 建立加权设计 ---
     design_i <- svydesign(ids = ~1, weights = ~sw_trunc, data = dat_i)
     
-    tryCatch({
-      svyglm(formula_m1, design = design_i, family = gaussian())
-    }, error = function(e) {
-      NULL
-    })
-  })
-  
-  # 移除NULL
-  fit_list_m1 <- Filter(Negate(is.null), fit_list_m1)
-  
-  if(length(fit_list_m1) > 0) {
-    # 合并
-    pooled_m1 <- MIcombine(fit_list_m1)
-    summary_m1 <- summary(pooled_m1)
+    # --- 4.3 拟合 Logistic 回归 (仅调整金属和 PS) ---
+    fit_i <- tryCatch({
+      svyglm(as.formula(paste0("LVR ~ ", log_metal, " + ps_score")), 
+             design = design_i, family = quasibinomial())
+    }, error = function(e) NULL)
     
-    # 提取金属系数
-    if(log_metal %in% rownames(summary_m1)) {
-      beta_m1 <- summary_m1[log_metal, "results"]
-      se_m1 <- summary_m1[log_metal, "se"]
+    if(!is.null(fit_i)) {
+      fit_list[[length(fit_list) + 1]] <- fit_i
       
-      results_model1 <- rbind(results_model1, data.frame(
-        Metal = metal,
-        Model = "Model 1 (核心)",
-        Beta = beta_m1,
-        SE = se_m1,
-        Lower95 = beta_m1 - 1.96 * se_m1,
-        Upper95 = beta_m1 + 1.96 * se_m1,
-        P_value = 2 * (1 - pnorm(abs(beta_m1 / se_m1))),
-        N_imputations = length(fit_list_m1)
-      ))
+      # --- 4.4 计算 C-statistic (AUC) ---
+      probs <- as.numeric(predict(fit_i, type = "response"))
+      roc_obj <- roc(dat_i$LVR, probs, weights = dat_i$sw_trunc, quiet = TRUE)
+      auc_vector <- c(auc_vector, as.numeric(auc(roc_obj)))
     }
   }
   
-  ## ─────────────────────────────
-  ## Model 2: 扩展协变量
-  ## ─────────────────────────────
-  
-  formula_m2 <- as.formula(paste0(
-    "delta_LVEDV ~ ", log_metal, " + ",
-    paste(covariates_extended, collapse = " + ")
-  ))
-  
-  fit_list_m2 <- lapply(1:20, function(imp_i) {
-    dat_i <- outcome_data %>% filter(.imp == imp_i)
-    design_i <- svydesign(ids = ~1, weights = ~sw_trunc, data = dat_i)
+  # --- 4.5 汇总 MI 结果 ---
+  if(length(fit_list) > 0) {
+    pooled_fit <- MIcombine(fit_list)
+    summary_fit <- summary(pooled_fit)
     
-    tryCatch({
-      svyglm(formula_m2, design = design_i, family = gaussian())
-    }, error = function(e) {
-      NULL
-    })
-  })
-  
-  fit_list_m2 <- Filter(Negate(is.null), fit_list_m2)
-  
-  if(length(fit_list_m2) > 0) {
-    pooled_m2 <- MIcombine(fit_list_m2)
-    summary_m2 <- summary(pooled_m2)
-    
-    if(log_metal %in% rownames(summary_m2)) {
-      beta_m2 <- summary_m2[log_metal, "results"]
-      se_m2 <- summary_m2[log_metal, "se"]
+    if(log_metal %in% rownames(summary_fit)) {
+      beta <- summary_fit[log_metal, "results"]
+      se <- summary_fit[log_metal, "se"]
       
-      results_model2 <- rbind(results_model2, data.frame(
+      results_final <- rbind(results_final, data.frame(
         Metal = metal,
-        Model = "Model 2 (扩展)",
-        Beta = beta_m2,
-        SE = se_m2,
-        Lower95 = beta_m2 - 1.96 * se_m2,
-        Upper95 = beta_m2 + 1.96 * se_m2,
-        P_value = 2 * (1 - pnorm(abs(beta_m2 / se_m2))),
-        N_imputations = length(fit_list_m2)
+        OR = exp(beta),
+        Lower95 = exp(beta - 1.96 * se),
+        Upper95 = exp(beta + 1.96 * se),
+        P_value = 2 * (1 - pnorm(abs(beta / se))),
+        C_statistic = mean(auc_vector) # 输出插补集平均 AUC
       ))
     }
   }
@@ -231,178 +137,98 @@ for(i in 1:length(metals)) {
 cat("完成!\n\n")
 
 ## ═══════════════════════════════════════════════════════
-## 步骤 5: FDR校正
+## 步骤 5: 保存结果 (含 AUC)
 ## ═══════════════════════════════════════════════════════
 
-cat("【步骤 5】多重检验校正\n")
+results_final <- results_final %>%
+  mutate(P_FDR = p.adjust(P_value, method = "BH")) %>%
+  arrange(P_value)
 
-# 合并两个模型的结果
-results_all <- rbind(results_model1, results_model2)
-
-# FDR校正（分别对两个模型）
-results_all <- results_all %>%
-  group_by(Model) %>%
-  mutate(
-    P_FDR = p.adjust(P_value, method = "BH")
-  ) %>%
-  ungroup() %>%
-  arrange(Model, P_value)
-
-cat("  Model 1: ", sum(results_model1$P_value < 0.05, na.rm=T), 
-    "个显著 (P<0.05),",
-    sum(results_model1$P_FDR < 0.10, na.rm=T), "个显著 (FDR<0.10)\n")
-
-cat("  Model 2: ", sum(results_model2$P_value < 0.05, na.rm=T), 
-    "个显著 (P<0.05),",
-    sum(results_model2$P_FDR < 0.10, na.rm=T), "个显著 (FDR<0.10)\n\n")
-
-# 保存结果
-write.csv(results_all,
-          here::here("outputs", "Single_Metal_Linear_Associations_Both_Models.csv"),
+write.csv(results_final,
+          here::here("outputs", "EF", "Single_Metal_PS_Adjusted_LVR_with_AUC.csv"),
           row.names = FALSE)
 
-cat("  ✓ 结果已保存\n\n")
 
 ## ═══════════════════════════════════════════════════════
-## 步骤 6: 生成森林图
+## 步骤 6: 最终视觉优化版 - 图形减半，字体加粗加大
 ## ═══════════════════════════════════════════════════════
 
-cat("【步骤 6】生成森林图\n")
+if(!require(forestplot)) install.packages("forestplot"); library(forestplot)
 
-# 仅使用Model 2（扩展模型）绘图
-results_plot <- results_all %>%
-  filter(Model == "Model 2 (扩展)") %>%
+cat("【步骤 6】生成图形压缩、字体放大版森林图...\n")
+
+# 1. 路径准备
+target_dir <- here::here("plots", "EF")
+if (!dir.exists(target_dir)) dir.create(target_dir, recursive = TRUE)
+file_path <- here::here("plots", "EF", "Forest_Plot_Optimized_Visual.png")
+metal_map <- c(
+  "Cu" = "铜 (Cu)", "Zn" = "锌 (Zn)", "Fe" = "铁 (Fe)", "Se" = "硒 (Se)", 
+  "Pb" = "铅 (Pb)", "Al" = "铝 (Al)", "As" = "砷 (As)", "Cr" = "铬 (Cr)", 
+  "Mn" = "锰 (Mn)", "Ni" = "镍 (Ni)", "Mo" = "钼 (Mo)", "Rb" = "铷 (Rb)", 
+  "Sb" = "锑 (Sb)", "Sn" = "锡 (Sn)", "Sr" = "锶 (Sr)", "V"  = "钒 (V)", 
+  "Ba" = "钡 (Ba)", "B"  = "硼 (B)",  "Li" = "锂 (Li)"
+)
+# 2. 数据准备 (按照 P 值排序)
+fp_data <- results_final %>%
+  arrange(P_value) %>%
   mutate(
-    Significant = case_when(
-      P_FDR < 0.05 ~ "FDR < 0.05",
-      P_FDR < 0.10 ~ "FDR < 0.10",
-      P_value < 0.05 ~ "P < 0.05",
-      TRUE ~ "不显著"
-    ),
-    Significant = factor(Significant, 
-                         levels = c("FDR < 0.05", "FDR < 0.10", 
-                                    "P < 0.05", "不显著"))
+    Metal_Lab = metal_map[as.character(Metal)],
+    OR_CI = sprintf("%.2f (%.2f, %.2f)", OR, Lower95, Upper95),
+    AUC_val = sprintf("%.3f", C_statistic),
+    P_val = format.pval(P_value, digits = 3, eps = 0.001)
   )
 
-# 森林图
-p_forest <- ggplot(results_plot, aes(x = Beta, y = reorder(Metal, Beta))) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50", size = 0.8) +
-  geom_errorbarh(aes(xmin = Lower95, xmax = Upper95, color = Significant),
-                 height = 0.3, size = 0.9) +
-  geom_point(aes(color = Significant, shape = Significant), 
-             size = 4, alpha = 0.9) +
-  scale_color_manual(
-    values = c("FDR < 0.05" = "#D73027", 
-               "FDR < 0.10" = "#FC8D59",
-               "P < 0.05" = "#91BFDB",
-               "不显著" = "gray60"),
-    name = "显著性"
-  ) +
-  scale_shape_manual(
-    values = c("FDR < 0.05" = 18, 
-               "FDR < 0.10" = 17,
-               "P < 0.05" = 16,
-               "不显著" = 16),
-    name = "显著性"
-  ) +
-  labs(
-    x = "ΔLVEDV变化 (%) per log单位金属增加",
-    y = "",
-    title = "19种血清金属与左室重构的关联",
-    subtitle = paste0("调整", length(covariates_extended), "个协变量 | ",
-                      "IPW加权多重插补分析 (m=20)")
-  ) +
-  theme_minimal(base_size = 13) +
-  theme(
-    legend.position = "right",
-    legend.title = element_text(face = "bold"),
-    panel.grid.major.y = element_line(color = "gray90"),
-    panel.grid.minor = element_blank(),
-    axis.text.y = element_text(size = 11, face = "bold"),
-    plot.title = element_text(hjust = 0.5, face = "bold", size = 15),
-    plot.subtitle = element_text(hjust = 0.5, color = "gray40", size = 11)
-  )
+# 3. 构造文本矩阵
+table_text <- rbind(
+  c("金属", "OR (95% CI)", "C-统计量", "P值"),
+  as.matrix(fp_data %>% select(Metal_Lab, OR_CI, AUC_val, P_val))
+)
 
-ggsave(here::here("plots", "Forest_Plot_Single_Metal_Extended.png"), 
-       p_forest,
-       width = 12, height = 10, dpi = 300, bg = "white")
+# 4. 构造数值向量
+mean_vec  <- c(NA, fp_data$OR)
+lower_vec <- c(NA, fp_data$Lower95)
+upper_vec <- c(NA, fp_data$Upper95)
 
-cat("  ✓ 森林图已保存\n\n")
+# 5. 绘图与保存
+# 画布宽度稍微加宽到 7.5 英寸，以容纳更大的字体，高度保持紧凑
+png(file_path, width = 7.5, height = 6, units = "in", res = 300)
 
-## ═══════════════════════════════════════════════════════
-## 步骤 7: 生成汇总表
-## ═══════════════════════════════════════════════════════
+forestplot(labeltext = table_text,
+           mean  = mean_vec,
+           lower = lower_vec,
+           upper = upper_vec,
+           
+           # --- 关键修改 1：压缩中间图形区域 ---
+           # 将图形宽度设为 25-30mm，能显著减小图形在全图中的占比
+           graphwidth = unit(28, "mm"), 
+           graph.pos = 2,
+           
+           # --- 关键修改 2：全面放大字体 (cex) ---
+           txt_gp = fpTxtGp(
+             label = gpar(cex = 1.2),     # 侧边表格文字显著放大
+             ticks = gpar(cex = 1.0),     # 刻度数值放大
+             xlab  = gpar(cex = 1.1),     # X 轴标签放大
+             title = gpar(cex = 1.3, fontface = "bold") # 标题加粗加大
+           ),
+           
+           # --- 样式与间距优化 ---
+           is.summary = c(TRUE, rep(FALSE, nrow(fp_data))),
+           zero = 1,
+           boxsize = 0.15,
+           lineheight = unit(6, 'mm'),    # 配合大字体，稍微增加行高
+           colgap = unit(5, 'mm'),        # 增加列间距，使大字体不拥挤
+           lwd.zero = 1.5,
+           lwd.ci = 1.8, 
+           col = fpColors(box = '#458B00', lines = 'black', zero = '#7AC5CD'),
+           
+           # --- 辅助设置 ---
+           xlab = "Odds Ratio (OR)",
+           clip = c(0.1, 3.5), 
+           lty.ci = "solid",
+           title = "金属暴露与 LVR 风险关联",
+           line.margin = 0.05,
+           fn.get_labels = "注: 调整18个协变量; * P < 0.05")
 
-cat("【步骤 7】生成汇总表\n")
+dev.off()
 
-# 识别显著金属
-sig_metals_fdr <- results_all %>%
-  filter(Model == "Model 2 (扩展)", P_FDR < 0.10) %>%
-  pull(Metal)
-
-sig_metals_p <- results_all %>%
-  filter(Model == "Model 2 (扩展)", P_value < 0.05, ! Metal %in% sig_metals_fdr) %>%
-  pull(Metal)
-
-if(length(sig_metals_fdr) > 0) {
-  cat("\n  显著金属 (FDR < 0.10):\n")
-  for(metal in sig_metals_fdr) {
-    res <- results_all %>% 
-      filter(Metal == metal, Model == "Model 2 (扩展)")
-    
-    cat("    ", metal, ": Beta =", round(res$Beta, 3), 
-        "(95% CI:", round(res$Lower95, 3), "-", round(res$Upper95, 3),
-        "), P =", format.pval(res$P_value, digits=3),
-        ", FDR =", round(res$P_FDR, 3), "\n")
-  }
-} else {
-  cat("\n  无金属达到FDR < 0.10\n")
-}
-
-if(length(sig_metals_p) > 0) {
-  cat("\n  边缘显著金属 (P < 0.05, FDR ≥ 0.10):\n")
-  for(metal in sig_metals_p) {
-    res <- results_all %>% 
-      filter(Metal == metal, Model == "Model 2 (扩展)")
-    
-    cat("    ", metal, ": Beta =", round(res$Beta, 3), 
-        "(", round(res$Lower95, 3), "-", round(res$Upper95, 3),
-        "), P =", format.pval(res$P_value, digits=3), "\n")
-  }
-}
-
-# 保存显著金属清单
-sig_metals_all <- unique(c(sig_metals_fdr, sig_metals_p))
-
-if(length(sig_metals_all) > 0) {
-  write.csv(data.frame(Metal = sig_metals_all, 
-                       Priority = c(rep("High", length(sig_metals_fdr)),
-                                    rep("Medium", length(sig_metals_p)))),
-            here::here("outputs", "Significant_Metals_for_RCS. csv"),
-            row.names = FALSE)
-  
-  cat("\n  ✓ 显著金属清单已保存（用于RCS分析）\n")
-}
-
-cat("\n")
-
-## ═══════════════════════════════════════════════════════
-## 完成
-## ═══════════════════════════════════════════════════════
-
-cat("╔═══════════════════════════════════════════════════════╗\n")
-cat("║         单金属线性关联分析完成！                    ║\n")
-cat("╚═══════════════════════════════════════════════════════╝\n\n")
-
-cat("输出文件:\n")
-cat("  1. Single_Metal_Linear_Associations_Both_Models.csv\n")
-cat("  2. Forest_Plot_Single_Metal_Extended.png\n")
-cat("  3. Significant_Metals_for_RCS.csv\n\n")
-
-cat("下一步:\n")
-cat("  → 运行RCS分析代码（针对显著金属）\n")
-cat("  → 运行分层分析代码（探索效应修饰）\n\n")
-
-############################################################
-## END
-############################################################
+cat(paste0("  ✓ 最终优化版森林图已保存: ", file_path, "\n"))
